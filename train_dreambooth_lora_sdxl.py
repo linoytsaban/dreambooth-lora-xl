@@ -563,9 +563,9 @@ def parse_args(input_args=None):
 
     if args.train_text_encoder_ti:
         if isinstance(args.token_abstraction, str):
-            token_abstraction = [args.token_abstraction]
+            args.token_abstraction = [args.token_abstraction]
         elif isinstance(args.token_abstraction, List):
-            token_abstraction = args.token_abstraction
+            args.token_abstraction = args.token_abstraction
         else:
             raise ValueError(f"Unsupported type for --args.token_abstraction: {type(args.token_abstraction)}. "
                              f"Supported types are: str (for a single instance identifier) or List[str] (for multiple concepts)")
@@ -1085,7 +1085,7 @@ def main(args):
     if args.train_text_encoder_ti:
         token_abstraction_dict = {}
         token_idx = 0
-        for i, token in enumerate(token_abstraction):
+        for i, token in enumerate(args.token_abstraction):
             token_abstraction_dict[token] = [f"<s{token_idx+i}>", f"<s{token_idx+i+1}>"]
             token_idx += 1
 
@@ -1099,7 +1099,10 @@ def main(args):
         embedding_handler = TokenEmbeddingsHandler(
             [text_encoder_one, text_encoder_two], [tokenizer_one, tokenizer_two]
         )
-        embedding_handler.initialize_new_tokens(inserting_toks=token_abstraction_dict.keys())
+        inserting_toks = []
+        for new_tok in token_abstraction_dict.values():
+            inserting_toks.extend(new_tok)
+        embedding_handler.initialize_new_tokens(inserting_toks=inserting_toks)
 
     # We only train the additional adapter LoRA layers
     vae.requires_grad_(False)
