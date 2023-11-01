@@ -1292,18 +1292,21 @@ def main(args):
                 args.learning_rate * args.gradient_accumulation_steps * args.train_batch_size * accelerator.num_processes
         )
 
+    # If neither --train_text_encoder nor --train_text_encoder_ti, text_encoders remain frozen during training
+    freeze_text_encoder = not (args.train_text_encoder or args.train_text_encoder_ti)
+
     # Optimization parameters
     unet_lora_parameters_with_lr = {"params": unet_lora_parameters, "lr": args.learning_rate}
-    if args.text_encoder_lr:  # different learning rate for text encoder and unet
-        text_lora_parameters_one_with_lr = {"params": text_lora_parameters_one, "lr": args.text_encoder_lr}
-        text_lora_parameters_two_with_lr = {"params": text_lora_parameters_two, "lr": args.text_encoder_lr}
-
+    if not freeze_text_encoder:
+        # different learning rate for text encoder and unet
+        text_lora_parameters_one_with_lr = {"params": text_lora_parameters_one,
+                                            "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate}
+        text_lora_parameters_two_with_lr = {"params": text_lora_parameters_two,
+                                            "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate}
+        params_to_optimize = [unet_lora_parameters_with_lr, text_lora_parameters_one_with_lr,
+                              text_lora_parameters_two_with_lr]
     else:
-        text_lora_parameters_one_with_lr = {"params": text_lora_parameters_one, "lr": args.learning_rate}
-        text_lora_parameters_two_with_lr = {"params": text_lora_parameters_two, "lr": args.learning_rate}
-
-    params_to_optimize = [unet_lora_parameters_with_lr, text_lora_parameters_one_with_lr,
-                          text_lora_parameters_two_with_lr]
+        params_to_optimize = [unet_lora_parameters_with_lr]
 
     # Optimizer creation
     if args.use_8bit_adam and not args.optimizer.lower() == "adamw":
@@ -1364,14 +1367,13 @@ def main(args):
         raise ValueError(
             f"Unsupported choice of optimizer: {args.optimizer.lower()}. Supported optimizers include [adamW, prodigy]")
 
-    print(token_abstraction_dict)
     # Dataset and DataLoaders creation:
     train_dataset = DreamBoothDataset(
         instance_data_root=args.instance_data_dir,
         instance_prompt=args.instance_prompt,
         class_prompt=args.class_prompt,
         class_data_root=args.class_data_dir if args.with_prior_preservation else None,
-        token_abstraction_dict=token_abstraction_dict,
+        token_abstraction_dict=token_abstraction_dict if args.train_text_encoder_ti else None,
         class_num=args.num_class_images,
         size=args.resolution,
         repeats=args.repeats,
@@ -1390,9 +1392,6 @@ def main(args):
     # regular text emebddings (when `train_text_encoder` is not True)
     # pooled text embeddings
     # time ids
-
-    # If neither --train_text_encoder nor --train_text_encoder_ti, text_encoders remain frozen during training
-    freeze_text_encoder = not (args.train_text_encoder or args.train_text_encoder_ti)
 
     def compute_time_ids():
         # Adapted from pipeline.StableDiffusionXLPipeline._get_add_time_ids
@@ -1660,8 +1659,10 @@ def main(args):
                         "time_ids": add_time_ids.repeat(elems_to_repeat, 1),
                         "text_embeds": unet_add_text_embeds.repeat(elems_to_repeat, 1),
                     }
-                    if not dataset.custom_instance_prompts:  # i.e. we only encoded --instance_prompt
+                    if not train_dataset.custom_instance_prompts:  # i.e. we only encoded --instance_prompt
                         prompt_embeds_input = prompt_embeds.repeat(elems_to_repeat, 1, 1)
+                    else:
+                        prompt_embeds_input = prompt_embeds
 
                     model_pred = unet(
                         noisy_model_input,
@@ -1950,6 +1951,7 @@ def main(args):
             )
 
     accelerator.end_training()
+
 
 if __name__ == "__main__":
     args = parse_args()
