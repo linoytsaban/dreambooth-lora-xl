@@ -395,7 +395,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--snr_gamma",
         type=float,
-        action="store_true",
+        default=None,
         help="SNR weighting gamma to be used if rebalancing the loss. Recommended value is 5.0. "
              "More details here: https://arxiv.org/abs/2303.09556.",
     )
@@ -474,9 +474,9 @@ def parse_args(input_args=None):
     parser.add_argument("--adam_epsilon", type=float, default=1e-08,
                         help="Epsilon value for the Adam optimizer and Prodigy optimizers.")
 
-    parser.add_argument("--prodigy_use_bias_correction ", type=bool, default=True,
+    parser.add_argument("--prodigy_use_bias_correction", type=bool, default=True,
                         help="Turn on Adam's bias correction. True by default.")
-    parser.add_argument("--prodigy_safeguard_warmup ", type=bool, default=True,
+    parser.add_argument("--prodigy_safeguard_warmup", type=bool, default=True,
                         help="Remove lr from the denominator of D estimate to avoid issues during warm-up stage. True by default.")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
@@ -550,10 +550,10 @@ def parse_args(input_args=None):
     else:
         args = parser.parse_args()
 
-    if args.dataset_name is None and args.train_data_dir is None:
+    if args.dataset_name is None and args.instance_data_dir is None:
         raise ValueError("Specify either `--dataset_name` or `--instance_data_dir`")
 
-    if args.dataset_name is not None and args.train_data_dir is not None:
+    if args.dataset_name is not None and args.instance_data_dir is not None:
         raise ValueError("Specify only one of `--dataset_name` or `--instance_data_dir`")
 
     if args.train_text_encoder and args.train_text_encoder_ti:
@@ -1188,6 +1188,9 @@ def main(args):
 
     # The text encoder comes from 🤗 transformers, so we cannot directly modify it.
     # So, instead, we monkey-patch the forward calls of its attention-blocks.
+    text_lora_parameters_one = []
+    text_lora_parameters_two = []
+
     if args.train_text_encoder:
         # ensure that dtype is float32, even if rest of the model that isn't trained is loaded in fp16
         text_lora_parameters_one = LoraLoaderMixin._modify_text_encoder(
@@ -1200,7 +1203,6 @@ def main(args):
     # if we use textual inversion, we freeze all parameters except for the token embeddings
     # in text encoder
     elif args.train_text_encoder_ti:
-        text_lora_parameters_one = []
         for name, param in text_encoder_one.named_parameters():
             if "token_embedding" in name:
                 param.requires_grad = True
@@ -1208,7 +1210,6 @@ def main(args):
                 text_lora_parameters_one.append(param)
             else:
                 param.requires_grad = False
-        text_lora_parameters_two = []
         for name, param in text_encoder_two.named_parameters():
             if "token_embedding" in name:
                 param.requires_grad = True
@@ -1655,7 +1656,7 @@ def main(args):
                         "time_ids": add_time_ids.repeat(elems_to_repeat, 1),
                         "text_embeds": unet_add_text_embeds.repeat(elems_to_repeat, 1),
                     }
-                    if not dataset.custom_instance_prompts:  # i.e. we only encoded --instance_prompt
+                    if not train_dataset.custom_instance_prompts:  # i.e. we only encoded --instance_prompt
                         prompt_embeds_input = prompt_embeds.repeat(elems_to_repeat, 1, 1)
 
                     model_pred = unet(
