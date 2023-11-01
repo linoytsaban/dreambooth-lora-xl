@@ -65,7 +65,7 @@ import os
 import shutil
 from typing import List, Optional
 
-#imports of the TokenEmbeddingsHandler class
+# imports of the TokenEmbeddingsHandler class
 import torch.utils.checkpoint
 from diffusers.models.attention_processor import LoRAAttnProcessor, LoRAAttnProcessor2_0
 from diffusers.optimization import get_scheduler
@@ -219,8 +219,16 @@ def parse_args(input_args=None):
         type=str,
         default=None,
         required=True,
-        help="The prompt with identifier specifying the instance",
+        help="The prompt with identifier specifying the instance, e.g. 'photo of a TOK dog', 'in the style of TOK'",
     )
+    parser.add_argument(
+        "--token_abstraction",
+        default="TOK",
+        required=True,
+        help="identifier specifying the instance(or instances) as used in instance_prompt, validation prompt, "
+             "captions - e.g. TOK",
+    )
+
     parser.add_argument(
         "--class_prompt",
         type=str,
@@ -553,6 +561,15 @@ def parse_args(input_args=None):
                          "For full LoRA text encoder training check --train_text_encoder, for textual "
                          "inversion training check `--train_text_encoder_ti`")
 
+    if args.train_text_encoder_ti:
+        if isinstance(args.token_abstraction, str):
+            token_abstraction = [args.token_abstraction]
+        elif isinstance(args.token_abstraction, List):
+            token_abstraction = args.token_abstraction
+        else:
+            raise ValueError(f"Unsupported type for --args.token_abstraction: {type(args.token_abstraction)}. "
+                             f"Supported types are: str (for a single instance identifier) or List[str] (for multiple concepts)")
+
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
         args.local_rank = env_local_rank
@@ -636,8 +653,7 @@ class DreamBoothDataset(Dataset):
                         f"column as --caption_column")
             self.custom_instance_prompts = None
         else:
-            caption_column = args.caption_column
-            if caption_column not in column_names:
+            if args.caption_column not in column_names:
                 raise ValueError(
                     f"`--caption_column` value '{args.caption_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
                 )
@@ -681,7 +697,11 @@ class DreamBoothDataset(Dataset):
         if self.custom_instance_prompts:
             caption = self.custom_instance_prompts[index % self.num_instance_images]
             if caption:
-                example["instance_prompt"] = self.custom_instance_prompts[index % self.num_instance_images]
+                if args.train_text_encoder_ti:
+                    # replace instances of --token_abstraction in caption with the new tokens: "<si><si+1>" etc.
+                    for token_abs, token_replacement in token_abstraction_dict.items():
+                        caption = caption.replace(token_abs, "".join(token_replacement))
+                example["instance_prompt"] = caption
             else:
                 example["instance_prompt"] = self.instance_prompt
 
@@ -1063,11 +1083,23 @@ def main(args):
     )
 
     if args.train_text_encoder_ti:
+        token_abstraction_dict = {}
+        token_idx = 0
+        for i, token in enumerate(token_abstraction):
+            token_abstraction_dict[token] = [f"<s{token_idx+i}>", f"<s{token_idx+i+1}>"]
+            token_idx += 1
+
+        # replace instances of --token_abstraction in --instance_prompt with the new tokens: "<si><si+1>" etc.
+        for token_abs, token_replacement in token_abstraction_dict.items():
+            args.instance_prompt = args.instance_prompt.replace(token_abs, "".join(token_replacement))
+            if args.with_prior_preservation:
+                args.class_prompt = args.class_prompt.replace(token_abs, "".join(token_replacement))
+
         # initialize the new tokens for textual inversion
         embedding_handler = TokenEmbeddingsHandler(
             [text_encoder_one, text_encoder_two], [tokenizer_one, tokenizer_two]
         )
-        embedding_handler.initialize_new_tokens(inserting_toks=["<s0>", "<s1>"])
+        embedding_handler.initialize_new_tokens(inserting_toks=token_abstraction_dict.keys())
 
     # We only train the additional adapter LoRA layers
     vae.requires_grad_(False)
@@ -1579,6 +1611,19 @@ def main(args):
                             tokens_one = torch.cat([tokens_one, class_tokens_one], dim=0)
                             tokens_two = torch.cat([tokens_two, class_tokens_two], dim=0)
 
+                # if we're optmizing the text encoder (both if instance prompt is used for all images or custom prompts) we need to tokenize and encode the
+                # batch prompts on all training steps
+                if not freeze_text_encoder:
+                    tokens_one = tokenize_prompt(tokenizer_one, prompts, add_special_tokens)
+                    tokens_two = tokenize_prompt(tokenizer_two, prompts, add_special_tokens)
+                    if args.with_prior_preservation:
+                        class_tokens_one = tokenize_prompt(tokenizer_one, args.class_prompt,
+                                                           add_special_tokens)
+                        class_tokens_two = tokenize_prompt(tokenizer_two, args.class_prompt,
+                                                           add_special_tokens)
+                        tokens_one = torch.cat([tokens_one, class_tokens_one], dim=0)
+                        tokens_two = torch.cat([tokens_two, class_tokens_two], dim=0)
+
                 # Convert images to latent space
                 model_input = vae.encode(pixel_values).latent_dist.sample()
                 model_input = model_input * vae.config.scaling_factor
@@ -1878,7 +1923,7 @@ def main(args):
         if args.push_to_hub:
             if args.train_text_encoder_ti:
                 embedding_handler.save_embeddings(
-                    f"{args.output_dir}/embeddings.safetensors",
+                    f"{args.output_dir}/embeddings.pti",
                 )
             save_model_card(
                 repo_id,
