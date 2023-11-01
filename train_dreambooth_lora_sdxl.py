@@ -395,7 +395,6 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--snr_gamma",
         type=float,
-        action="store_true",
         help="SNR weighting gamma to be used if rebalancing the loss. Recommended value is 5.0. "
              "More details here: https://arxiv.org/abs/2303.09556.",
     )
@@ -589,179 +588,6 @@ def parse_args(input_args=None):
     return args
 
 
-class DreamBoothDataset(Dataset):
-    """
-    A dataset to prepare the instance and class images with the prompts for fine-tuning the model.
-    It pre-processes the images.
-    """
-
-    def __init__(
-            self,
-            instance_data_root,
-            instance_prompt,
-            class_prompt,
-            class_data_root=None,
-            class_num=None,
-            size=1024,
-            repeats=1,
-            center_crop=False,
-    ):
-        self.size = size
-        self.center_crop = center_crop
-
-        self.instance_data_root = Path(instance_data_root)
-
-        self.instance_prompt = instance_prompt
-        self.custom_instance_prompts = None
-        self.class_prompt = class_prompt
-
-        if args.dataset_name is not None:
-            # Downloading and loading a dataset from the hub.
-            # See more about loading custom images at
-            # https://huggingface.co/docs/datasets/v2.0.0/en/dataset_script
-            dataset = load_dataset(
-                instance_dataset_name,
-                args.dataset_config_name,
-                cache_dir=args.cache_dir,
-            )
-        else:
-            if not self.instance_data_root.exists():
-                raise ValueError("Instance images root doesn't exists.")
-
-            dataset = load_dataset(instance_data_root,
-                                   cache_dir=args.cache_dir,
-                                   )
-
-        # Preprocessing the datasets.
-        column_names = dataset["train"].column_names
-
-        # 6. Get the column names for input/target.
-        if args.image_column is None:
-            image_column = column_names[0]
-            logger.info(f"image column defaulting to {image_column}")
-        else:
-            image_column = args.image_column
-            if image_column not in column_names:
-                raise ValueError(
-                    f"`--image_column` value '{args.image_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-                )
-        self.instance_images_path = dataset["train"][image_column]
-
-        if args.caption_column is None:
-            logger.info(f"No caption column provided, defaulting to instance_prompt for all images. If your dataset "
-                        f"contains captions/prompts for the images, make sure to specify the "
-                        f"column as --caption_column")
-            self.custom_instance_prompts = None
-        else:
-            if args.caption_column not in column_names:
-                raise ValueError(
-                    f"`--caption_column` value '{args.caption_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-                )
-
-        self.num_instance_images = len(self.instance_images_path)
-        self._length = self.num_instance_images * repeats
-
-        if class_data_root is not None:
-            self.class_data_root = Path(class_data_root)
-            self.class_data_root.mkdir(parents=True, exist_ok=True)
-            self.class_images_path = list(self.class_data_root.iterdir())
-            if class_num is not None:
-                self.num_class_images = min(len(self.class_images_path), class_num)
-            else:
-                self.num_class_images = len(self.class_images_path)
-            self._length = max(self.num_class_images, self.num_instance_images)
-        else:
-            self.class_data_root = None
-
-        self.image_transforms = transforms.Compose(
-            [
-                transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
-        )
-
-    def __len__(self):
-        return self._length
-
-    def __getitem__(self, index):
-        example = {}
-        instance_image = self.instance_images_path[index % self.num_instance_images]
-        instance_image = exif_transpose(instance_image)
-
-        if not instance_image.mode == "RGB":
-            instance_image = instance_image.convert("RGB")
-        example["instance_images"] = self.image_transforms(instance_image)
-
-        if self.custom_instance_prompts:
-            caption = self.custom_instance_prompts[index % self.num_instance_images]
-            if caption:
-                if args.train_text_encoder_ti:
-                    # replace instances of --token_abstraction in caption with the new tokens: "<si><si+1>" etc.
-                    for token_abs, token_replacement in token_abstraction_dict.items():
-                        caption = caption.replace(token_abs, "".join(token_replacement))
-                example["instance_prompt"] = caption
-            else:
-                example["instance_prompt"] = self.instance_prompt
-
-        else:  # costum prompts were provided, but length does not match size of image dataset
-            example["instance_prompt"] = self.instance_prompt
-
-        if self.class_data_root:
-            class_image = Image.open(self.class_images_path[index % self.num_class_images])
-            class_image = exif_transpose(class_image)
-
-            if not class_image.mode == "RGB":
-                class_image = class_image.convert("RGB")
-            example["class_images"] = self.image_transforms(class_image)
-            example["class_prompt"] = self.class_prompt
-
-        return example
-
-
-def collate_fn(examples, with_prior_preservation=False):
-    pixel_values = [example["instance_images"] for example in examples]
-    prompts = [example["instance_prompt"] for example in examples]
-
-    # Concat class and instance examples for prior preservation.
-    # We do this to avoid doing two forward passes.
-    if with_prior_preservation:
-        pixel_values += [example["class_images"] for example in examples]
-        prompts += [example["class_prompt"] for example in examples]
-
-    pixel_values = torch.stack(pixel_values)
-    pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
-
-    batch = {"pixel_values": pixel_values, "prompts": prompts}
-    return batch
-
-
-def compute_snr(timesteps):
-    """
-    Computes SNR as per https://github.com/TiankaiHang/Min-SNR-Diffusion-Training/blob/521b624bd70c67cee4bdf49225915f5945a872e3/guided_diffusion/gaussian_diffusion.py#L847-L849
-    """
-    alphas_cumprod = noise_scheduler.alphas_cumprod
-    sqrt_alphas_cumprod = alphas_cumprod ** 0.5
-    sqrt_one_minus_alphas_cumprod = (1.0 - alphas_cumprod) ** 0.5
-
-    # Expand the tensors.
-    # Adapted from https://github.com/TiankaiHang/Min-SNR-Diffusion-Training/blob/521b624bd70c67cee4bdf49225915f5945a872e3/guided_diffusion/gaussian_diffusion.py#L1026
-    sqrt_alphas_cumprod = sqrt_alphas_cumprod.to(device=timesteps.device)[timesteps].float()
-    while len(sqrt_alphas_cumprod.shape) < len(timesteps.shape):
-        sqrt_alphas_cumprod = sqrt_alphas_cumprod[..., None]
-    alpha = sqrt_alphas_cumprod.expand(timesteps.shape)
-
-    sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod.to(device=timesteps.device)[timesteps].float()
-    while len(sqrt_one_minus_alphas_cumprod.shape) < len(timesteps.shape):
-        sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod[..., None]
-    sigma = sqrt_one_minus_alphas_cumprod.expand(timesteps.shape)
-
-    # Compute SNR.
-    snr = (alpha / sigma) ** 2
-    return snr
-
-
 class TokenEmbeddingsHandler:
     def __init__(self, text_encoders, tokenizers):
         self.text_encoders = text_encoders
@@ -773,6 +599,7 @@ class TokenEmbeddingsHandler:
 
     def initialize_new_tokens(self, inserting_toks: List[str]):
         idx = 0
+        print("All my single tokens put your hands up", inserting_toks)
         for tokenizer, text_encoder in zip(self.tokenizers, self.text_encoders):
             assert isinstance(
                 inserting_toks, list
@@ -895,6 +722,182 @@ class TokenEmbeddingsHandler:
 
                 loaded_embeddings = f.get_tensor(f"text_encoders_{idx}")
                 self._load_embeddings(loaded_embeddings, tokenizer, text_encoder)
+
+
+class DreamBoothDataset(Dataset):
+    """
+    A dataset to prepare the instance and class images with the prompts for fine-tuning the model.
+    It pre-processes the images.
+    """
+
+    def __init__(
+            self,
+            instance_data_root,
+            instance_prompt,
+            class_prompt,
+            class_data_root=None,
+            class_num=None,
+            token_abstraction_dict=None,  # token mapping for textual inversion
+            size=1024,
+            repeats=1,
+            center_crop=False,
+    ):
+        self.size = size
+        self.center_crop = center_crop
+
+        self.instance_data_root = Path(instance_data_root)
+
+        self.instance_prompt = instance_prompt
+        self.custom_instance_prompts = None
+        self.class_prompt = class_prompt
+        self.token_abstraction_dict = token_abstraction_dict
+
+        if args.dataset_name is not None:
+            # Downloading and loading a dataset from the hub.
+            # See more about loading custom images at
+            # https://huggingface.co/docs/datasets/v2.0.0/en/dataset_script
+            dataset = load_dataset(
+                instance_dataset_name,
+                args.dataset_config_name,
+                cache_dir=args.cache_dir,
+            )
+        else:
+            if not self.instance_data_root.exists():
+                raise ValueError("Instance images root doesn't exists.")
+
+            dataset = load_dataset(instance_data_root,
+                                   cache_dir=args.cache_dir,
+                                   )
+
+        # Preprocessing the datasets.
+        column_names = dataset["train"].column_names
+
+        # 6. Get the column names for input/target.
+        if args.image_column is None:
+            image_column = column_names[0]
+            logger.info(f"image column defaulting to {image_column}")
+        else:
+            image_column = args.image_column
+            if image_column not in column_names:
+                raise ValueError(
+                    f"`--image_column` value '{args.image_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
+                )
+        self.instance_images_path = dataset["train"][image_column]
+
+        if args.caption_column is None:
+            logger.info(f"No caption column provided, defaulting to instance_prompt for all images. If your dataset "
+                        f"contains captions/prompts for the images, make sure to specify the "
+                        f"column as --caption_column")
+            self.custom_instance_prompts = None
+        else:
+            if args.caption_column not in column_names:
+                raise ValueError(
+                    f"`--caption_column` value '{args.caption_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
+                )
+            self.custom_instance_prompts = dataset["train"][args.caption_column]
+
+        self.num_instance_images = len(self.instance_images_path)
+        self._length = self.num_instance_images * repeats
+
+        if class_data_root is not None:
+            self.class_data_root = Path(class_data_root)
+            self.class_data_root.mkdir(parents=True, exist_ok=True)
+            self.class_images_path = list(self.class_data_root.iterdir())
+            if class_num is not None:
+                self.num_class_images = min(len(self.class_images_path), class_num)
+            else:
+                self.num_class_images = len(self.class_images_path)
+            self._length = max(self.num_class_images, self.num_instance_images)
+        else:
+            self.class_data_root = None
+
+        self.image_transforms = transforms.Compose(
+            [
+                transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR),
+                transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5]),
+            ]
+        )
+
+    def __len__(self):
+        return self._length
+
+    def __getitem__(self, index):
+        example = {}
+        instance_image = self.instance_images_path[index % self.num_instance_images]
+        instance_image = exif_transpose(instance_image)
+
+        if not instance_image.mode == "RGB":
+            instance_image = instance_image.convert("RGB")
+        example["instance_images"] = self.image_transforms(instance_image)
+
+        if self.custom_instance_prompts:
+            caption = self.custom_instance_prompts[index % self.num_instance_images]
+            if caption:
+                if args.train_text_encoder_ti:
+                    # replace instances of --token_abstraction in caption with the new tokens: "<si><si+1>" etc.
+                    for token_abs, token_replacement in self.token_abstraction_dict.items():
+                        caption = caption.replace(token_abs, "".join(token_replacement))
+                example["instance_prompt"] = caption
+            else:
+                example["instance_prompt"] = self.instance_prompt
+
+        else:  # costum prompts were provided, but length does not match size of image dataset
+            example["instance_prompt"] = self.instance_prompt
+
+        if self.class_data_root:
+            class_image = Image.open(self.class_images_path[index % self.num_class_images])
+            class_image = exif_transpose(class_image)
+
+            if not class_image.mode == "RGB":
+                class_image = class_image.convert("RGB")
+            example["class_images"] = self.image_transforms(class_image)
+            example["class_prompt"] = self.class_prompt
+
+        return example
+
+
+def collate_fn(examples, with_prior_preservation=False):
+    pixel_values = [example["instance_images"] for example in examples]
+    prompts = [example["instance_prompt"] for example in examples]
+
+    # Concat class and instance examples for prior preservation.
+    # We do this to avoid doing two forward passes.
+    if with_prior_preservation:
+        pixel_values += [example["class_images"] for example in examples]
+        prompts += [example["class_prompt"] for example in examples]
+
+    pixel_values = torch.stack(pixel_values)
+    pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
+
+    batch = {"pixel_values": pixel_values, "prompts": prompts}
+    return batch
+
+
+def compute_snr(timesteps):
+    """
+    Computes SNR as per https://github.com/TiankaiHang/Min-SNR-Diffusion-Training/blob/521b624bd70c67cee4bdf49225915f5945a872e3/guided_diffusion/gaussian_diffusion.py#L847-L849
+    """
+    alphas_cumprod = noise_scheduler.alphas_cumprod
+    sqrt_alphas_cumprod = alphas_cumprod ** 0.5
+    sqrt_one_minus_alphas_cumprod = (1.0 - alphas_cumprod) ** 0.5
+
+    # Expand the tensors.
+    # Adapted from https://github.com/TiankaiHang/Min-SNR-Diffusion-Training/blob/521b624bd70c67cee4bdf49225915f5945a872e3/guided_diffusion/gaussian_diffusion.py#L1026
+    sqrt_alphas_cumprod = sqrt_alphas_cumprod.to(device=timesteps.device)[timesteps].float()
+    while len(sqrt_alphas_cumprod.shape) < len(timesteps.shape):
+        sqrt_alphas_cumprod = sqrt_alphas_cumprod[..., None]
+    alpha = sqrt_alphas_cumprod.expand(timesteps.shape)
+
+    sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod.to(device=timesteps.device)[timesteps].float()
+    while len(sqrt_one_minus_alphas_cumprod.shape) < len(timesteps.shape):
+        sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod[..., None]
+    sigma = sqrt_one_minus_alphas_cumprod.expand(timesteps.shape)
+
+    # Compute SNR.
+    snr = (alpha / sigma) ** 2
+    return snr
 
 
 class PromptDataset(Dataset):
@@ -1086,7 +1089,7 @@ def main(args):
         token_abstraction_dict = {}
         token_idx = 0
         for i, token in enumerate(args.token_abstraction):
-            token_abstraction_dict[token] = [f"<s{token_idx+i}>", f"<s{token_idx+i+1}>"]
+            token_abstraction_dict[token] = [f"<s{token_idx + i}>", f"<s{token_idx + i + 1}>"]
             token_idx += 1
 
         # replace instances of --token_abstraction in --instance_prompt with the new tokens: "<si><si+1>" etc.
@@ -1361,12 +1364,14 @@ def main(args):
         raise ValueError(
             f"Unsupported choice of optimizer: {args.optimizer.lower()}. Supported optimizers include [adamW, prodigy]")
 
+    print(token_abstraction_dict)
     # Dataset and DataLoaders creation:
     train_dataset = DreamBoothDataset(
         instance_data_root=args.instance_data_dir,
         instance_prompt=args.instance_prompt,
         class_prompt=args.class_prompt,
         class_data_root=args.class_data_dir if args.with_prior_preservation else None,
+        token_abstraction_dict=token_abstraction_dict,
         class_num=args.num_class_images,
         size=args.resolution,
         repeats=args.repeats,
@@ -1945,7 +1950,6 @@ def main(args):
             )
 
     accelerator.end_training()
-
 
 if __name__ == "__main__":
     args = parse_args()
