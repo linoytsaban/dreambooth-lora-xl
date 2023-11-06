@@ -1195,7 +1195,6 @@ def main(args):
         text_lora_parameters_one = LoraLoaderMixin._modify_text_encoder(
             text_encoder_one, dtype=torch.float32, rank=args.rank
         )
-        # print(text_lora_parameters_one)
         text_lora_parameters_two = LoraLoaderMixin._modify_text_encoder(
             text_encoder_two, dtype=torch.float32, rank=args.rank
         )
@@ -1207,7 +1206,6 @@ def main(args):
         for name, param in text_encoder_one.named_parameters():
             if "token_embedding" in name:
                 param.requires_grad = True
-                # print(name)
                 text_lora_parameters_one.append(param)
             else:
                 param.requires_grad = False
@@ -1215,7 +1213,6 @@ def main(args):
         for name, param in text_encoder_two.named_parameters():
             if "token_embedding" in name:
                 param.requires_grad = True
-                # print(name)
                 text_lora_parameters_two.append(param)
             else:
                 param.requires_grad = False
@@ -1303,7 +1300,6 @@ def main(args):
                                             "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate}
         text_lora_parameters_two_with_lr = {"params": text_lora_parameters_two, "weight_decay": 1e-3,
                                             "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate}
-        print("TEXT LR", text_lora_parameters_one_with_lr["lr"])
         params_to_optimize = [unet_lora_parameters_with_lr, text_lora_parameters_one_with_lr,
                               text_lora_parameters_two_with_lr]
     else:
@@ -1368,7 +1364,6 @@ def main(args):
         raise ValueError(
             f"Unsupported choice of optimizer: {args.optimizer.lower()}. Supported optimizers include [adamW, prodigy]")
 
-    # print(token_abstraction_dict)
     # Dataset and DataLoaders creation:
     train_dataset = DreamBoothDataset(
         instance_data_root=args.instance_data_dir,
@@ -1577,7 +1572,6 @@ def main(args):
                         betas=(args.adam_beta1, args.adam_beta2),
                         beta3=args.prodigy_beta3,
                         weight_decay=args.adam_weight_decay,
-                        # weight_decay=1e-4,
                         eps=args.adam_epsilon,
                         decouple=args.prodigy_decouple,
                         use_bias_correction=args.prodigy_use_bias_correction,
@@ -1588,7 +1582,6 @@ def main(args):
                         params_to_optimize,
                         betas=(args.adam_beta1, args.adam_beta2),
                         weight_decay=args.adam_weight_decay,
-                        # weight_decay=1e-4,
                         eps=args.adam_epsilon,
                     )
             else:
@@ -1666,7 +1659,6 @@ def main(args):
                         added_cond_kwargs=unet_added_conditions,
                     ).sample
                 else:
-                    print("YESSSSSSSSS #5")
                     unet_added_conditions = {"time_ids": add_time_ids.repeat(elems_to_repeat, 1)}
                     prompt_embeds, pooled_prompt_embeds = encode_prompt(
                         text_encoders=[text_encoder_one, text_encoder_two],
