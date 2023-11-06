@@ -466,7 +466,7 @@ def parse_args(input_args=None):
                              "uses the value of square root of beta2")
     parser.add_argument("--prodigy_decouple", type=bool, default=True,
                         help="Use AdamW style decoupled weight decay")
-    parser.add_argument("--adam_weight_decay", type=float, default=1e-02, help="Weight decay to use. If you're using "
+    parser.add_argument("--adam_weight_decay", type=float, default=1e-03, help="Weight decay to use. If you're using "
                                                                                "the Adam optimizer you might want to "
                                                                                "change value to 1e-4")
 
