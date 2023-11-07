@@ -466,9 +466,9 @@ def parse_args(input_args=None):
                              "uses the value of square root of beta2")
     parser.add_argument("--prodigy_decouple", type=bool, default=True,
                         help="Use AdamW style decoupled weight decay")
-    parser.add_argument("--adam_weight_decay", type=float, default=1e-03, help="Weight decay to use. If you're using "
-                                                                               "the Adam optimizer you might want to "
-                                                                               "change value to 1e-4")
+    parser.add_argument("--adam_weight_decay", type=float, default=1e-04, help="Weight decay to use for unet params")
+    parser.add_argument("--adam_weight_decay_text_encoder", type=float, default=1e-03, help="Weight decay to use for "
+                                                                                            "text_encoder")
 
     parser.add_argument("--adam_epsilon", type=float, default=1e-08,
                         help="Epsilon value for the Adam optimizer and Prodigy optimizers.")
@@ -1296,9 +1296,11 @@ def main(args):
     unet_lora_parameters_with_lr = {"params": unet_lora_parameters, "lr": args.learning_rate}
     if not freeze_text_encoder:
         # different learning rate for text encoder and unet
-        text_lora_parameters_one_with_lr = {"params": text_lora_parameters_one, "weight_decay": 1e-3,
+        text_lora_parameters_one_with_lr = {"params": text_lora_parameters_one,
+                                            "weight_decay": args.adam_weight_decay_text_encoder,
                                             "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate}
-        text_lora_parameters_two_with_lr = {"params": text_lora_parameters_two, "weight_decay": 1e-3,
+        text_lora_parameters_two_with_lr = {"params": text_lora_parameters_two,
+                                            "weight_decay": args.adam_weight_decay_text_encoder,
                                             "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate}
         params_to_optimize = [unet_lora_parameters_with_lr, text_lora_parameters_one_with_lr,
                               text_lora_parameters_two_with_lr]
