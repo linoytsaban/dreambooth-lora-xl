@@ -1606,7 +1606,7 @@ def main(args):
                         prompt_embeds, unet_add_text_embeds = compute_text_embeddings(
                             prompts, text_encoders, tokenizers)
                         if args.with_prior_preservation:
-                            prompt_embeds_input = torch.cat([prompt_embeds, class_prompt_hidden_states], dim=0)
+                            prompt_embeds = torch.cat([prompt_embeds, class_prompt_hidden_states], dim=0)
                             unet_add_text_embeds = torch.cat([unet_add_text_embeds, class_pooled_prompt_embeds], dim=0)
 
                     else:
@@ -1627,6 +1627,7 @@ def main(args):
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(model_input)
                 bsz = model_input.shape[0]
+                print("model_input.shape[0]", model_input.shape[0])
                 # Sample a random timestep for each image
                 timesteps = torch.randint(
                     0, noise_scheduler.config.num_train_timesteps, (bsz,), device=model_input.device
@@ -1637,23 +1638,19 @@ def main(args):
                 # (this is the forward diffusion process)
                 noisy_model_input = noise_scheduler.add_noise(model_input, noise, timesteps)
 
-                # Calculate the elements to repeat depending on the use of prior-preservation.
-                elems_to_repeat = bsz // 2 if args.with_prior_preservation else bsz
+                # Calculate the elements to repeat depending on the use of prior-preservation and custom captions.
+                if not train_dataset.custom_instance_prompts:
+                    elems_to_repeat = bsz // 2 if args.with_prior_preservation else bsz
+                else:
+                    elems_to_repeat = 1  # todo - make it smarter
 
                 # Predict the noise residual
                 if freeze_text_encoder:
-                    if not train_dataset.custom_instance_prompts:  # i.e. we only encoded --instance_prompt
-                        unet_added_conditions = {
-                            "time_ids": add_time_ids.repeat(elems_to_repeat, 1),
-                            "text_embeds": unet_add_text_embeds.repeat(elems_to_repeat, 1),
-                        }
-                        prompt_embeds_input = prompt_embeds.repeat(elems_to_repeat, 1, 1)
-                    else:
-                        unet_added_conditions = {
-                            "time_ids": add_time_ids,
-                            "text_embeds": unet_add_text_embeds, }
-                        prompt_embeds_input = prompt_embeds
-
+                    unet_added_conditions = {
+                        "time_ids": add_time_ids.repeat(elems_to_repeat, 1),
+                        "text_embeds": unet_add_text_embeds.repeat(elems_to_repeat, 1),
+                    }
+                    prompt_embeds_input = prompt_embeds.repeat(elems_to_repeat, 1, 1)
                     model_pred = unet(
                         noisy_model_input,
                         timesteps,
@@ -1661,7 +1658,8 @@ def main(args):
                         added_cond_kwargs=unet_added_conditions,
                     ).sample
                 else:
-                    unet_added_conditions = {"time_ids": add_time_ids.repeat(elems_to_repeat, 1)}
+                    unet_added_conditions = {"time_ids": add_time_ids.repeat(bsz, 1)}  # todo - make it smarter
+                    # unet_added_conditions = {"time_ids": add_time_ids.repeat(elems_to_repeat, 1)}
                     prompt_embeds, pooled_prompt_embeds = encode_prompt(
                         text_encoders=[text_encoder_one, text_encoder_two],
                         tokenizers=None,
@@ -1941,6 +1939,7 @@ def main(args):
             )
 
     accelerator.end_training()
+
 
 if __name__ == "__main__":
     args = parse_args()
