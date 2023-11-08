@@ -224,9 +224,16 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--token_abstraction",
         default="TOK",
-        required=True,
         help="identifier specifying the instance(or instances) as used in instance_prompt, validation prompt, "
              "captions - e.g. TOK",
+    )
+
+    parser.add_argument(
+        "--num_new_tokens_per_abstraction",
+        default=2,
+        help="number of new tokens inserted to the tokenizers per token_abstraction value when "
+             "--train_text_encoder_ti = True. By default, each --token_abstraction (e.g. TOK) is mapped to 2 new "
+             "tokens - <si><si+1> ",
     )
 
     parser.add_argument(
@@ -1088,8 +1095,9 @@ def main(args):
         token_abstraction_dict = {}
         token_idx = 0
         for i, token in enumerate(args.token_abstraction):
-            token_abstraction_dict[token] = [f"<s{token_idx + i}>", f"<s{token_idx + i + 1}>"]
-            token_idx += 1
+            token_abstraction_dict[token] = [f"<s{token_idx + i + j}>" for j in range(
+                args.num_new_tokens_per_abstraction)]
+            token_idx += (args.num_new_tokens_per_abstraction - 1)
 
         # replace instances of --token_abstraction in --instance_prompt with the new tokens: "<si><si+1>" etc.
         for token_abs, token_replacement in token_abstraction_dict.items():
