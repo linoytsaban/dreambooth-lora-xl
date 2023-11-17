@@ -23,7 +23,6 @@ import os
 import shutil
 import warnings
 from pathlib import Path
-from typing import Dict
 
 import numpy as np
 import torch
@@ -32,7 +31,8 @@ import torch.utils.checkpoint
 import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
-from accelerate.utils import ProjectConfiguration, set_seed
+from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
+from datasets import load_dataset
 from huggingface_hub import create_repo, upload_folder
 from packaging import version
 from PIL import Image
@@ -41,7 +41,6 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, PretrainedConfig
-from datasets import load_dataset
 
 import diffusers
 from diffusers import (
@@ -51,10 +50,10 @@ from diffusers import (
     StableDiffusionXLPipeline,
     UNet2DConditionModel,
 )
-from diffusers.loaders import LoraLoaderMixin, text_encoder_lora_state_dict
-from diffusers.models.lora import LoRALinearLayer
+from diffusers.loaders import LoraLoaderMixin
+from diffusers.models.lora import LoRALinearLayer, text_encoder_lora_state_dict
 from diffusers.optimization import get_scheduler
-from diffusers.training_utils import unet_lora_state_dict, compute_snr
+from diffusers.training_utils import compute_snr, unet_lora_state_dict
 from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
 
@@ -73,13 +72,13 @@ from safetensors.torch import save_file
 from tqdm.auto import tqdm
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
-check_min_version("0.22.0.dev0")
+check_min_version("0.24.0.dev0")
 
 logger = get_logger(__name__)
 
 
 def save_model_card(
-        repo_id: str, images=None, base_model=str, train_text_encoder=False, prompt=str, repo_folder=None, vae_path=None
+    repo_id: str, images=None, base_model=str, train_text_encoder=False, prompt=str, repo_folder=None, vae_path=None
 ):
     img_str = ""
     for i, image in enumerate(images):
@@ -115,7 +114,7 @@ Special VAE used for training: {vae_path}.
 
 
 def import_model_class_from_model_name_or_path(
-        pretrained_model_name_or_path: str, revision: str, subfolder: str = "text_encoder"
+    pretrained_model_name_or_path: str, revision: str, subfolder: str = "text_encoder"
 ):
     text_encoder_config = PretrainedConfig.from_pretrained(
         pretrained_model_name_or_path, subfolder=subfolder, revision=revision
@@ -191,9 +190,12 @@ def parse_args(input_args=None):
     )
 
     parser.add_argument(
-        "--image_column", type=str, default="image", help="The column of the dataset containing the target image. By "
-                                                          "default, the standard Image Dataset maps out 'file_name' "
-                                                          "to 'image'."
+        "--image_column",
+        type=str,
+        default="image",
+        help="The column of the dataset containing the target image. By "
+        "default, the standard Image Dataset maps out 'file_name' "
+        "to 'image'.",
     )
     parser.add_argument(
         "--caption_column",
@@ -202,10 +204,7 @@ def parse_args(input_args=None):
         help="The column of the dataset containing the instance prompt for each image",
     )
 
-    parser.add_argument("--repeats",
-                        type=int,
-                        default=1,
-                        help="How many times to repeat the training data.")
+    parser.add_argument("--repeats", type=int, default=1, help="How many times to repeat the training data.")
 
     parser.add_argument(
         "--class_data_dir",
@@ -403,7 +402,7 @@ def parse_args(input_args=None):
         "--snr_gamma",
         type=float,
         help="SNR weighting gamma to be used if rebalancing the loss. Recommended value is 5.0. "
-             "More details here: https://arxiv.org/abs/2303.09556.",
+        "More details here: https://arxiv.org/abs/2303.09556.",
     )
     parser.add_argument(
         "--lr_warmup_steps", type=int, default=500, help="Number of steps for the warmup in the lr scheduler."
@@ -458,7 +457,6 @@ def parse_args(input_args=None):
             'The optimizer type to use. Choose between ["AdamW", "prodigy"]'
         ),
     )
-
     parser.add_argument(
         "--use_8bit_adam", action="store_true", help="Whether or not to use 8-bit Adam from bitsandbytes. Ignored if "
                                                      "optimizer is not set to AdamW"
@@ -763,7 +761,7 @@ class DreamBoothDataset(Dataset):
             # See more about loading custom images at
             # https://huggingface.co/docs/datasets/v2.0.0/en/dataset_script
             dataset = load_dataset(
-                instance_dataset_name,
+                args.dataset_name,
                 args.dataset_config_name,
                 cache_dir=args.cache_dir,
             )
@@ -771,9 +769,10 @@ class DreamBoothDataset(Dataset):
             if not self.instance_data_root.exists():
                 raise ValueError("Instance images root doesn't exists.")
 
-            dataset = load_dataset(instance_data_root,
-                                   cache_dir=args.cache_dir,
-                                   )
+            dataset = load_dataset(
+                instance_data_root,
+                cache_dir=args.cache_dir,
+            )
 
         # Preprocessing the datasets.
         column_names = dataset["train"].column_names
@@ -791,9 +790,11 @@ class DreamBoothDataset(Dataset):
         self.instance_images_path = dataset["train"][image_column]
 
         if args.caption_column is None:
-            logger.info(f"No caption column provided, defaulting to instance_prompt for all images. If your dataset "
-                        f"contains captions/prompts for the images, make sure to specify the "
-                        f"column as --caption_column")
+            logger.info(
+                "No caption column provided, defaulting to instance_prompt for all images. If your dataset "
+                "contains captions/prompts for the images, make sure to specify the "
+                "column as --caption_column"
+            )
             self.custom_instance_prompts = None
         else:
             if args.caption_column not in column_names:
@@ -880,6 +881,7 @@ def collate_fn(examples, with_prior_preservation=False):
     batch = {"pixel_values": pixel_values, "prompts": prompts}
     return batch
 
+
 class PromptDataset(Dataset):
     "A simple dataset to prepare the prompts to generate class images on multiple GPUs."
 
@@ -943,12 +945,13 @@ def main(args):
     logging_dir = Path(args.output_dir, args.logging_dir)
 
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
-
+    kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
         log_with=args.report_to,
         project_config=accelerator_project_config,
+        kwargs_handlers=[kwargs],
     )
 
     if args.report_to == "wandb":
@@ -1006,7 +1009,7 @@ def main(args):
             pipeline.to(accelerator.device)
 
             for example in tqdm(
-                    sample_dataloader, desc="Generating class images", disable=not accelerator.is_local_main_process
+                sample_dataloader, desc="Generating class images", disable=not accelerator.is_local_main_process
             ):
                 images = pipeline(example["prompt"]).images
 
@@ -1268,7 +1271,7 @@ def main(args):
 
     if args.scale_lr:
         args.learning_rate = (
-                args.learning_rate * args.gradient_accumulation_steps * args.train_batch_size * accelerator.num_processes
+            args.learning_rate * args.gradient_accumulation_steps * args.train_batch_size * accelerator.num_processes
         )
 
     # If neither --train_text_encoder nor --train_text_encoder_ti, text_encoders remain frozen during training
@@ -1278,26 +1281,37 @@ def main(args):
     unet_lora_parameters_with_lr = {"params": unet_lora_parameters, "lr": args.learning_rate}
     if not freeze_text_encoder:
         # different learning rate for text encoder and unet
-        text_lora_parameters_one_with_lr = {"params": text_lora_parameters_one,
-                                            "weight_decay": args.adam_weight_decay_text_encoder,
-                                            "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate}
-        text_lora_parameters_two_with_lr = {"params": text_lora_parameters_two,
-                                            "weight_decay": args.adam_weight_decay_text_encoder,
-                                            "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate}
-        params_to_optimize = [unet_lora_parameters_with_lr, text_lora_parameters_one_with_lr,
-                              text_lora_parameters_two_with_lr]
+        text_lora_parameters_one_with_lr = {
+            "params": text_lora_parameters_one,
+            "weight_decay": args.adam_weight_decay_text_encoder,
+            "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate,
+        }
+        text_lora_parameters_two_with_lr = {
+            "params": text_lora_parameters_two,
+            "weight_decay": args.adam_weight_decay_text_encoder,
+            "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate,
+        }
+        params_to_optimize = [
+            unet_lora_parameters_with_lr,
+            text_lora_parameters_one_with_lr,
+            text_lora_parameters_two_with_lr,
+        ]
     else:
         params_to_optimize = [unet_lora_parameters_with_lr]
 
     # Optimizer creation
     if not (args.optimizer.lower() == "prodigy" or args.optimizer.lower() == "adamw"):
-        logger.warn(f"Unsupported choice of optimizer: {args.optimizer}.Supported optimizers include [adamW, prodigy]."
-                    "Defaulting to adamW")
+        logger.warn(
+            f"Unsupported choice of optimizer: {args.optimizer}.Supported optimizers include [adamW, prodigy]."
+            "Defaulting to adamW"
+        )
         args.optimizer = "adamw"
 
     if args.use_8bit_adam and not args.optimizer.lower() == "adamw":
-        logger.warn(f"use_8bit_adam is ignored when optimizer is not set to 'AdamW'. Optimizer was "
-                    f"set to {args.optimizer.lower()}")
+        logger.warn(
+            f"use_8bit_adam is ignored when optimizer is not set to 'AdamW'. Optimizer was "
+            f"set to {args.optimizer.lower()}"
+        )
 
     if args.optimizer.lower() == "adamw":
         if args.use_8bit_adam:
@@ -1329,13 +1343,18 @@ def main(args):
 
         if args.learning_rate <= 0.1:
             logger.warn(
-                f"Learning rate is too low. When using prodigy, it's generally better to set learning rate around 1.0"
+                "Learning rate is too low. When using prodigy, it's generally better to set learning rate around 1.0"
             )
-        if args.text_encoder_lr:
+        if args.train_text_encoder and args.text_encoder_lr:
             logger.warn(
-                f"Learning rates were provided both for the unet and the text encdoer- e.g. text_encoder_lr and learning_rate"
-                f"when using prodigy only learning_rate is used as the initial learning rate"
+                f"Learning rates were provided both for the unet and the text encoder- e.g. text_encoder_lr:"
+                f" {args.text_encoder_lr} and learning_rate: {args.learning_rate}. "
+                f"When using prodigy only learning_rate is used as the initial learning rate."
             )
+            # changes the learning rate of text_encoder_parameters_one and text_encoder_parameters_two to be
+            # --learning_rate
+            params_to_optimize[1]["lr"] = args.learning_rate
+            params_to_optimize[2]["lr"] = args.learning_rate
 
         optimizer = optimizer_class(
             params_to_optimize,
@@ -1371,7 +1390,7 @@ def main(args):
     )
 
     # Computes additional embeddings/ids required by the SDXL UNet.
-    # regular text emebddings (when `train_text_encoder` is not True)
+    # regular text embeddings (when `train_text_encoder` is not True)
     # pooled text embeddings
     # time ids
 
@@ -1588,11 +1607,11 @@ def main(args):
                 if train_dataset.custom_instance_prompts:
                     if freeze_text_encoder:
                         prompt_embeds, unet_add_text_embeds = compute_text_embeddings(
-                            prompts, text_encoders, tokenizers)
+                            prompts, text_encoders, tokenizers
+                        )
                         if args.with_prior_preservation:
                             prompt_embeds = torch.cat([prompt_embeds, class_prompt_hidden_states], dim=0)
                             unet_add_text_embeds = torch.cat([unet_add_text_embeds, class_pooled_prompt_embeds], dim=0)
-
                     else:
                         tokens_one = tokenize_prompt(tokenizer_one, prompts, add_special_tokens)
                         tokens_two = tokenize_prompt(tokenizer_two, prompts, add_special_tokens)
@@ -1698,9 +1717,6 @@ def main(args):
                         # Epsilon and sample both use the same loss weights.
                         mse_loss_weights = base_weight
 
-                    # We calculate the original loss and then we mean over the non-batch dimensions and
-                    # rebalance the sample-wise losses with their respective loss weights.
-                    # Finally, we take the mean of the rebalanced loss.
                     loss = F.mse_loss(model_pred.float(), target.float(), reduction="none")
                     loss = loss.mean(dim=list(range(1, len(loss.shape)))) * mse_loss_weights
                     loss = loss.mean()
