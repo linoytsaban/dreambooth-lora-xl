@@ -54,7 +54,7 @@ from diffusers import (
 from diffusers.loaders import LoraLoaderMixin, text_encoder_lora_state_dict
 from diffusers.models.lora import LoRALinearLayer
 from diffusers.optimization import get_scheduler
-from diffusers.training_utils import unet_lora_state_dict
+from diffusers.training_utils import unet_lora_state_dict, compute_snr
 from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
 
@@ -204,7 +204,7 @@ def parse_args(input_args=None):
 
     parser.add_argument("--repeats",
                         type=int,
-                        default=100,
+                        default=1,
                         help="How many times to repeat the training data.")
 
     parser.add_argument(
@@ -880,32 +880,6 @@ def collate_fn(examples, with_prior_preservation=False):
     batch = {"pixel_values": pixel_values, "prompts": prompts}
     return batch
 
-
-def compute_snr(timesteps):
-    """
-    Computes SNR as per https://github.com/TiankaiHang/Min-SNR-Diffusion-Training/blob/521b624bd70c67cee4bdf49225915f5945a872e3/guided_diffusion/gaussian_diffusion.py#L847-L849
-    """
-    alphas_cumprod = noise_scheduler.alphas_cumprod
-    sqrt_alphas_cumprod = alphas_cumprod ** 0.5
-    sqrt_one_minus_alphas_cumprod = (1.0 - alphas_cumprod) ** 0.5
-
-    # Expand the tensors.
-    # Adapted from https://github.com/TiankaiHang/Min-SNR-Diffusion-Training/blob/521b624bd70c67cee4bdf49225915f5945a872e3/guided_diffusion/gaussian_diffusion.py#L1026
-    sqrt_alphas_cumprod = sqrt_alphas_cumprod.to(device=timesteps.device)[timesteps].float()
-    while len(sqrt_alphas_cumprod.shape) < len(timesteps.shape):
-        sqrt_alphas_cumprod = sqrt_alphas_cumprod[..., None]
-    alpha = sqrt_alphas_cumprod.expand(timesteps.shape)
-
-    sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod.to(device=timesteps.device)[timesteps].float()
-    while len(sqrt_one_minus_alphas_cumprod.shape) < len(timesteps.shape):
-        sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod[..., None]
-    sigma = sqrt_one_minus_alphas_cumprod.expand(timesteps.shape)
-
-    # Compute SNR.
-    snr = (alpha / sigma) ** 2
-    return snr
-
-
 class PromptDataset(Dataset):
     "A simple dataset to prepare the prompts to generate class images on multiple GPUs."
 
@@ -1316,9 +1290,34 @@ def main(args):
         params_to_optimize = [unet_lora_parameters_with_lr]
 
     # Optimizer creation
+    if not (args.optimizer.lower() == "prodigy" or args.optimizer.lower() == "adamw"):
+        logger.warn(f"Unsupported choice of optimizer: {args.optimizer}.Supported optimizers include [adamW, prodigy]."
+                    "Defaulting to adamW")
+        args.optimizer = "adamw"
+
     if args.use_8bit_adam and not args.optimizer.lower() == "adamw":
         logger.warn(f"use_8bit_adam is ignored when optimizer is not set to 'AdamW'. Optimizer was "
                     f"set to {args.optimizer.lower()}")
+
+    if args.optimizer.lower() == "adamw":
+        if args.use_8bit_adam:
+            try:
+                import bitsandbytes as bnb
+            except ImportError:
+                raise ImportError(
+                    "To use 8-bit Adam, please install the bitsandbytes library: `pip install bitsandbytes`."
+                )
+
+            optimizer_class = bnb.optim.AdamW8bit
+        else:
+            optimizer_class = torch.optim.AdamW
+
+        optimizer = optimizer_class(
+            params_to_optimize,
+            betas=(args.adam_beta1, args.adam_beta2),
+            weight_decay=args.adam_weight_decay,
+            eps=args.adam_epsilon,
+        )
 
     if args.optimizer.lower() == "prodigy":
         try:
@@ -1349,30 +1348,6 @@ def main(args):
             use_bias_correction=args.prodigy_use_bias_correction,
             safeguard_warmup=args.prodigy_safeguard_warmup,
         )
-
-
-    elif args.optimizer.lower() == "adamw":
-        if args.use_8bit_adam:
-            try:
-                import bitsandbytes as bnb
-            except ImportError:
-                raise ImportError(
-                    "To use 8-bit Adam, please install the bitsandbytes library: `pip install bitsandbytes`."
-                )
-
-            optimizer_class = bnb.optim.AdamW8bit
-        else:
-            optimizer_class = torch.optim.AdamW
-
-        optimizer = optimizer_class(
-            params_to_optimize,
-            betas=(args.adam_beta1, args.adam_beta2),
-            weight_decay=args.adam_weight_decay,
-            eps=args.adam_epsilon,
-        )
-    else:
-        raise ValueError(
-            f"Unsupported choice of optimizer: {args.optimizer.lower()}. Supported optimizers include [adamW, prodigy]")
 
     # Dataset and DataLoaders creation:
     train_dataset = DreamBoothDataset(
@@ -1608,6 +1583,7 @@ def main(args):
             with accelerator.accumulate(unet):
                 pixel_values = batch["pixel_values"].to(dtype=vae.dtype)
                 prompts = batch["prompts"]
+                print(prompts)
                 # encode batch prompts when custom prompts are provided for each image -
                 if train_dataset.custom_instance_prompts:
                     if freeze_text_encoder:
@@ -1648,17 +1624,20 @@ def main(args):
 
                 # Calculate the elements to repeat depending on the use of prior-preservation and custom captions.
                 if not train_dataset.custom_instance_prompts:
-                    elems_to_repeat = bsz // 2 if args.with_prior_preservation else bsz
+                    elems_to_repeat_text_embeds = bsz // 2 if args.with_prior_preservation else bsz
+                    elems_to_repeat_time_ids = bsz // 2 if args.with_prior_preservation else bsz
+                    print("elems_to_repeat_text_embeds", model_input.shape[0])
                 else:
-                    elems_to_repeat = 1  # todo - make it smarter
-
+                    elems_to_repeat_text_embeds = 1
+                    elems_to_repeat_time_ids = bsz // 2 if args.with_prior_preservation else bsz
+                    print("elems_to_repeat_text_embeds", model_input.shape[0])
                 # Predict the noise residual
                 if freeze_text_encoder:
                     unet_added_conditions = {
-                        "time_ids": add_time_ids.repeat(elems_to_repeat, 1),
-                        "text_embeds": unet_add_text_embeds.repeat(elems_to_repeat, 1),
+                        "time_ids": add_time_ids.repeat(elems_to_repeat_time_ids, 1),
+                        "text_embeds": unet_add_text_embeds.repeat(elems_to_repeat_text_embeds, 1),
                     }
-                    prompt_embeds_input = prompt_embeds.repeat(elems_to_repeat, 1, 1)
+                    prompt_embeds_input = prompt_embeds.repeat(elems_to_repeat_text_embeds, 1, 1)
                     model_pred = unet(
                         noisy_model_input,
                         timesteps,
@@ -1666,7 +1645,9 @@ def main(args):
                         added_cond_kwargs=unet_added_conditions,
                     ).sample
                 else:
-                    unet_added_conditions = {"time_ids": add_time_ids.repeat(bsz, 1)}  # todo - make it smarter
+                    print("add_time_ids1",add_time_ids.shape)
+                    unet_added_conditions = {"time_ids": add_time_ids.repeat(elems_to_repeat_time_ids, 1)}
+                    print("add_time_ids2",add_time_ids.shape)
                     # unet_added_conditions = {"time_ids": add_time_ids.repeat(elems_to_repeat, 1)}
                     prompt_embeds, pooled_prompt_embeds = encode_prompt(
                         text_encoders=[text_encoder_one, text_encoder_two],
@@ -1674,8 +1655,10 @@ def main(args):
                         prompt=None,
                         text_input_ids_list=[tokens_one, tokens_two],
                     )
-                    unet_added_conditions.update({"text_embeds": pooled_prompt_embeds.repeat(elems_to_repeat, 1)})
-                    prompt_embeds_input = prompt_embeds.repeat(elems_to_repeat, 1, 1)
+                    print("pooled_prompt_embeds1",pooled_prompt_embeds.shape)
+                    unet_added_conditions.update({"text_embeds": pooled_prompt_embeds.repeat(elems_to_repeat_text_embeds, 1)})
+                    print("pooled_prompt_embeds2",pooled_prompt_embeds.shape)
+                    prompt_embeds_input = prompt_embeds.repeat(elems_to_repeat_text_embeds, 1, 1)
                     model_pred = unet(
                         noisy_model_input, timesteps, prompt_embeds_input, added_cond_kwargs=unet_added_conditions
                     ).sample
@@ -1702,7 +1685,7 @@ def main(args):
                     # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
                     # Since we predict the noise instead of x_0, the original formulation is slightly changed.
                     # This is discussed in Section 4.2 of the same paper.
-                    snr = compute_snr(timesteps)
+                    snr = compute_snr(noise_scheduler, timesteps)
                     base_weight = (
                             torch.stack([snr, args.snr_gamma * torch.ones_like(timesteps)], dim=1).min(dim=1)[
                                 0] / snr
@@ -1928,7 +1911,7 @@ def main(args):
         if args.push_to_hub:
             if args.train_text_encoder_ti:
                 embedding_handler.save_embeddings(
-                    f"{args.output_dir}/embeddings.pti",
+                    f"{args.output_dir}/embeddings.safetensors",
                 )
             save_model_card(
                 repo_id,
