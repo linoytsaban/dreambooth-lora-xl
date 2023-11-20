@@ -77,36 +77,66 @@ logger = get_logger(__name__)
 
 
 def save_model_card(
-    repo_id: str, images=None, base_model=str, train_text_encoder=False, prompt=str, repo_folder=None, vae_path=None
+    repo_id: str,
+    images=None,
+    base_model=str,
+    train_text_encoder=False,
+    instance_prompt=str,
+    validation_prompt=str,
+    repo_folder=None,
+    vae_path=None,
 ):
-    img_str = ""
+    img_str = "widget:\n" if images else ""
     for i, image in enumerate(images):
         image.save(os.path.join(repo_folder, f"image_{i}.png"))
-        img_str += f"![img_{i}](./image_{i}.png)\n"
+        img_str += f"""
+        - text: '{validation_prompt if validation_prompt else ' ' }'
+          parameters:
+            negative_prompt: '-'
+          output:
+            url: "image_{i}.png"
+        """
 
     yaml = f"""
 ---
-license: openrail++
-base_model: {base_model}
-instance_prompt: {prompt}
 tags:
 - stable-diffusion-xl
 - stable-diffusion-xl-diffusers
 - text-to-image
 - diffusers
 - lora
-inference: true
+- template:sd-lora
+widget:
+{img_str}
+---
+base_model: {base_model}
+instance_prompt: {instance_prompt}
+license: openrail++
 ---
     """
+
     model_card = f"""
-# LoRA DreamBooth - {repo_id}
+# SDXL LoRA DreamBooth - {repo_id}
 
-These are LoRA adaption weights for {base_model}. The weights were trained on {prompt} using [DreamBooth](https://dreambooth.github.io/). You can find some example images in the following. \n
-{img_str}
+<Gallery />
 
+## Model description
+
+These are {repo_id} LoRA adaption weights for {base_model}.
+The weights were trained  using [DreamBooth](https://dreambooth.github.io/).
 LoRA for the text encoder was enabled: {train_text_encoder}.
-
 Special VAE used for training: {vae_path}.
+
+## Trigger words
+
+You should use {instance_prompt} to trigger the image generation.
+
+## Download model
+
+Weights for this model are available in Safetensors format.
+
+[Download]({repo_id}/tree/main) them in the Files & versions tab.
+
 """
     with open(os.path.join(repo_folder, "README.md"), "w") as f:
         f.write(yaml + model_card)
@@ -179,16 +209,6 @@ def parse_args(input_args=None):
             " https://huggingface.co/docs/datasets/image_dataset#imagefolder. In particular, a `metadata.jsonl` file"
             " must exist to provide the captions for the images. Ignored if `dataset_name` is specified."
         ),
-    )
-
-    parser.add_argument(
-        "--instance_data_metadata_file_name",
-        type=str,
-        default="metadata.jsonl",
-        help="file name(relative path) of a jsonl metadata file located in --instance_data_dir. In particular, "
-             "if you wish to use custom captions, a `metadata.jsonl` file must exist to provide captions for the "
-             "images. Ignored if `dataset_name` is specified. see "
-             "https://huggingface.co/docs/datasets/image_dataset#imagefolder for more information"
     )
 
     parser.add_argument(
@@ -410,6 +430,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--snr_gamma",
         type=float,
+        default=None,
         help="SNR weighting gamma to be used if rebalancing the loss. Recommended value is 5.0. "
         "More details here: https://arxiv.org/abs/2303.09556.",
     )
@@ -461,36 +482,18 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--optimizer",
         type=str,
-        default="prodigy",
+        default="adamW",
         help=(
             'The optimizer type to use. Choose between ["AdamW", "prodigy"]'
         ),
     )
     parser.add_argument(
-        "--use_8bit_adam", action="store_true", help="Whether or not to use 8-bit Adam from bitsandbytes. Ignored if "
-                                                     "optimizer is not set to AdamW"
+        "--prodigy_safeguard_warmup",
+        type=bool,
+        default=True,
+        help="Remove lr from the denominator of D estimate to avoid issues during warm-up stage. True by default. "
+        "Ignored if optimizer is adamW",
     )
-
-    parser.add_argument("--adam_beta1", type=float, default=0.9,
-                        help="The beta1 parameter for the Adam and Prodigy optimizers.")
-    parser.add_argument("--adam_beta2", type=float, default=0.999,
-                        help="The beta2 parameter for the Adam and Prodigy optimizers.")
-    parser.add_argument("--prodigy_beta3", type=float, default=None,
-                        help="coefficients for computing the Prodidy stepsize using running averages. If set to None, "
-                             "uses the value of square root of beta2")
-    parser.add_argument("--prodigy_decouple", type=bool, default=True,
-                        help="Use AdamW style decoupled weight decay")
-    parser.add_argument("--adam_weight_decay", type=float, default=1e-04, help="Weight decay to use for unet params")
-    parser.add_argument("--adam_weight_decay_text_encoder", type=float, default=1e-03, help="Weight decay to use for "
-                                                                                            "text_encoder")
-
-    parser.add_argument("--adam_epsilon", type=float, default=1e-08,
-                        help="Epsilon value for the Adam optimizer and Prodigy optimizers.")
-
-    parser.add_argument("--prodigy_use_bias_correction", type=bool, default=True,
-                        help="Turn on Adam's bias correction. True by default.")
-    parser.add_argument("--prodigy_safeguard_warmup", type=bool, default=True,
-                        help="Remove lr from the denominator of D estimate to avoid issues during warm-up stage. True by default.")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
     parser.add_argument("--hub_token", type=str, default=None, help="The token to use to push to the Model Hub.")
@@ -758,21 +761,21 @@ class DreamBoothDataset(Dataset):
         self.size = size
         self.center_crop = center_crop
 
-        self.instance_data_root = Path(instance_data_root)
-
         self.instance_prompt = instance_prompt
         self.custom_instance_prompts = None
         self.class_prompt = class_prompt
         self.token_abstraction_dict = token_abstraction_dict
 
-        load_as_dataset = False
-
+        # if --dataset_name is provided or a metadata jsonl file is provided in the local --instance_data directory,
+        # we load the training data using load_dataset
         if args.dataset_name is not None:
             try:
                 from datasets import load_dataset
             except ImportError:
                 raise ImportError(
-                    "To use load_dataset, please install the datasets library: `pip install datasets`."
+                    "You are trying to load your data using the datasets library. If you wish to train using custom "
+                    "captions please install the datasets library: `pip install datasets`. If you wish to load a "
+                    "local folder containing images only, specify --instance_data_dir instead."
                 )
             # Downloading and loading a dataset from the hub.
             # See more about loading custom images at
@@ -782,25 +785,6 @@ class DreamBoothDataset(Dataset):
                 args.dataset_config_name,
                 cache_dir=args.cache_dir,
             )
-            load_as_dataset = True
-        else:
-            if not self.instance_data_root.exists():
-                raise ValueError("Instance images root doesn't exists.")
-
-            if args.instance_data_metadata_file_name in os.listdir(instance_data_root):
-                try:
-                    from datasets import load_dataset
-                except ImportError:
-                    raise ImportError(
-                        "To use load_dataset, please install the datasets library: `pip install datasets`."
-                    )
-                dataset = load_dataset(
-                    instance_data_root,
-                    cache_dir=args.cache_dir,
-                )
-                load_as_dataset = True
-
-        if load_as_dataset:
             # Preprocessing the datasets.
             column_names = dataset["train"].column_names
 
@@ -833,8 +817,11 @@ class DreamBoothDataset(Dataset):
                 self.custom_instance_prompts = []
                 for caption in custom_instance_prompts:
                     self.custom_instance_prompts.extend(itertools.repeat(caption, repeats))
-
         else:
+            self.instance_data_root = Path(instance_data_root)
+            if not self.instance_data_root.exists():
+                raise ValueError("Instance images root doesn't exists.")
+
             instance_images = [Image.open(path) for path in list(Path(instance_data_root).iterdir())]
             self.custom_instance_prompts = None
 
@@ -1959,7 +1946,8 @@ def main(args):
                 images=images,
                 base_model=args.pretrained_model_name_or_path,
                 train_text_encoder=args.train_text_encoder,
-                prompt=args.instance_prompt,
+                instance_prompt=args.instance_prompt,
+                validation_prompt=args.validation_prompt,
                 repo_folder=args.output_dir,
                 vae_path=args.pretrained_vae_model_name_or_path,
             )
