@@ -489,7 +489,7 @@ def parse_args(input_args=None):
 
     parser.add_argument("--prodigy_use_bias_correction", type=bool, default=True,
                         help="Turn on Adam's bias correction. True by default.")
-    parser.add_argument("--prodigy_safeguard_warmup ", type=bool, default=True,
+    parser.add_argument("--prodigy_safeguard_warmup", type=bool, default=True,
                         help="Remove lr from the denominator of D estimate to avoid issues during warm-up stage. True by default.")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
