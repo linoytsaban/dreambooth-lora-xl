@@ -32,7 +32,6 @@ import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
-from datasets import load_dataset
 from huggingface_hub import create_repo, upload_folder
 from packaging import version
 from PIL import Image
@@ -488,7 +487,7 @@ def parse_args(input_args=None):
     parser.add_argument("--adam_epsilon", type=float, default=1e-08,
                         help="Epsilon value for the Adam optimizer and Prodigy optimizers.")
 
-    parser.add_argument("--prodigy_use_bias_correction ", type=bool, default=True,
+    parser.add_argument("--prodigy_use_bias_correction", type=bool, default=True,
                         help="Turn on Adam's bias correction. True by default.")
     parser.add_argument("--prodigy_safeguard_warmup ", type=bool, default=True,
                         help="Remove lr from the denominator of D estimate to avoid issues during warm-up stage. True by default.")
@@ -769,7 +768,12 @@ class DreamBoothDataset(Dataset):
         load_as_dataset = False
 
         if args.dataset_name is not None:
-            from datasets import load_dataset
+            try:
+                from datasets import load_dataset
+            except ImportError:
+                raise ImportError(
+                    "To use load_dataset, please install the datasets library: `pip install datasets`."
+                )
             # Downloading and loading a dataset from the hub.
             # See more about loading custom images at
             # https://huggingface.co/docs/datasets/v2.0.0/en/dataset_script
@@ -784,7 +788,12 @@ class DreamBoothDataset(Dataset):
                 raise ValueError("Instance images root doesn't exists.")
 
             if args.instance_data_metadata_file_name in os.listdir(instance_data_root):
-                from datasets import load_dataset
+                try:
+                    from datasets import load_dataset
+                except ImportError:
+                    raise ImportError(
+                        "To use load_dataset, please install the datasets library: `pip install datasets`."
+                    )
                 dataset = load_dataset(
                     instance_data_root,
                     cache_dir=args.cache_dir,
