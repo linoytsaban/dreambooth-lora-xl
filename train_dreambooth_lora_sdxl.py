@@ -91,10 +91,9 @@ def save_model_card(
         image.save(os.path.join(repo_folder, f"image_{i}.png"))
         img_str += f"""
         - text: '{validation_prompt if validation_prompt else ' ' }'
-          parameters:
-            negative_prompt: '-'
           output:
-            url: "image_{i}.png"
+            url: >-
+                "image_{i}.png"
         """
 
     yaml = f"""
@@ -604,7 +603,7 @@ def parse_args(input_args=None):
 
     return args
 
-
+# Taken from https://github.com/replicate/cog-sdxl/blob/main/dataset_and_utils.py
 class TokenEmbeddingsHandler:
     def __init__(self, text_encoders, tokenizers):
         self.text_encoders = text_encoders
@@ -1510,7 +1509,7 @@ def main(args):
     )
 
     # Prepare everything with our `accelerator`.
-    if args.train_text_encoder or args.train_text_encoder_ti:
+    if not freeze_text_encoder:
         unet, text_encoder_one, text_encoder_two, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
             unet, text_encoder_one, text_encoder_two, optimizer, train_dataloader, lr_scheduler
         )
@@ -1688,7 +1687,9 @@ def main(args):
                         prompt=None,
                         text_input_ids_list=[tokens_one, tokens_two],
                     )
-                    unet_added_conditions.update({"text_embeds": pooled_prompt_embeds.repeat(elems_to_repeat_text_embeds, 1)})
+                    unet_added_conditions.update(
+                        {"text_embeds": pooled_prompt_embeds.repeat(elems_to_repeat_text_embeds, 1)}
+                    )
                     prompt_embeds_input = prompt_embeds.repeat(elems_to_repeat_text_embeds, 1, 1)
                     model_pred = unet(
                         noisy_model_input, timesteps, prompt_embeds_input, added_cond_kwargs=unet_added_conditions
@@ -1718,8 +1719,7 @@ def main(args):
                     # This is discussed in Section 4.2 of the same paper.
                     snr = compute_snr(noise_scheduler, timesteps)
                     base_weight = (
-                            torch.stack([snr, args.snr_gamma * torch.ones_like(timesteps)], dim=1).min(dim=1)[
-                                0] / snr
+                        torch.stack([snr, args.snr_gamma * torch.ones_like(timesteps)], dim=1).min(dim=1)[0] / snr
                     )
 
                     if noise_scheduler.config.prediction_type == "v_prediction":
