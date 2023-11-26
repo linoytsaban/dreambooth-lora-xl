@@ -23,10 +23,13 @@ import os
 import shutil
 import warnings
 from pathlib import Path
+from typing import List, Optional
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+# imports of the TokenEmbeddingsHandler class
 import torch.utils.checkpoint
 import transformers
 from accelerate import Accelerator
@@ -36,6 +39,7 @@ from huggingface_hub import create_repo, upload_folder
 from packaging import version
 from PIL import Image
 from PIL.ImageOps import exif_transpose
+from safetensors.torch import save_file
 from torch.utils.data import Dataset
 from torchvision import transforms
 from tqdm.auto import tqdm
@@ -50,30 +54,50 @@ from diffusers import (
     UNet2DConditionModel,
 )
 from diffusers.loaders import LoraLoaderMixin
-from diffusers.models.lora import LoRALinearLayer, text_encoder_lora_state_dict
+from diffusers.models.lora import LoRALinearLayer
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import compute_snr, unet_lora_state_dict
 from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
 
-import fnmatch
-import json
-import math
-import os
-import shutil
-from typing import List, Optional
-
-# imports of the TokenEmbeddingsHandler class
-import torch.utils.checkpoint
-from diffusers.models.attention_processor import LoRAAttnProcessor, LoRAAttnProcessor2_0
-from diffusers.optimization import get_scheduler
-from safetensors.torch import save_file
-from tqdm.auto import tqdm
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.24.0.dev0")
 
 logger = get_logger(__name__)
+
+
+# TODO: This function should be removed once training scripts are rewritten in PEFT
+def text_encoder_lora_state_dict(text_encoder):
+    state_dict = {}
+
+    def text_encoder_attn_modules(text_encoder):
+        from transformers import CLIPTextModel, CLIPTextModelWithProjection
+
+        attn_modules = []
+
+        if isinstance(text_encoder, (CLIPTextModel, CLIPTextModelWithProjection)):
+            for i, layer in enumerate(text_encoder.text_model.encoder.layers):
+                name = f"text_model.encoder.layers.{i}.self_attn"
+                mod = layer.self_attn
+                attn_modules.append((name, mod))
+
+        return attn_modules
+
+    for name, module in text_encoder_attn_modules(text_encoder):
+        for k, v in module.q_proj.lora_linear_layer.state_dict().items():
+            state_dict[f"{name}.q_proj.lora_linear_layer.{k}"] = v
+
+        for k, v in module.k_proj.lora_linear_layer.state_dict().items():
+            state_dict[f"{name}.k_proj.lora_linear_layer.{k}"] = v
+
+        for k, v in module.v_proj.lora_linear_layer.state_dict().items():
+            state_dict[f"{name}.v_proj.lora_linear_layer.{k}"] = v
+
+        for k, v in module.out_proj.lora_linear_layer.state_dict().items():
+            state_dict[f"{name}.out_proj.lora_linear_layer.{k}"] = v
+
+    return state_dict
 
 
 def save_model_card(
@@ -92,7 +116,7 @@ def save_model_card(
         img_str += f"""
         - text: '{validation_prompt if validation_prompt else ' ' }'
           output:
-            url: >-
+            url:
                 "image_{i}.png"
         """
 
@@ -105,9 +129,7 @@ tags:
 - diffusers
 - lora
 - template:sd-lora
-widget:
 {img_str}
----
 base_model: {base_model}
 instance_prompt: {instance_prompt}
 license: openrail++
@@ -121,9 +143,12 @@ license: openrail++
 
 ## Model description
 
-These are {repo_id} LoRA adaption weights for {base_model}.
+### These are {repo_id} LoRA adaption weights for {base_model}.
+
 The weights were trained  using [DreamBooth](https://dreambooth.github.io/).
+
 LoRA for the text encoder was enabled: {train_text_encoder}.
+
 Special VAE used for training: {vae_path}.
 
 ## Trigger words
@@ -248,15 +273,15 @@ def parse_args(input_args=None):
         "--token_abstraction",
         default="TOK",
         help="identifier specifying the instance(or instances) as used in instance_prompt, validation prompt, "
-             "captions - e.g. TOK",
+        "captions - e.g. TOK",
     )
 
     parser.add_argument(
         "--num_new_tokens_per_abstraction",
         default=2,
         help="number of new tokens inserted to the tokenizers per token_abstraction value when "
-             "--train_text_encoder_ti = True. By default, each --token_abstraction (e.g. TOK) is mapped to 2 new "
-             "tokens - <si><si+1> ",
+        "--train_text_encoder_ti = True. By default, each --token_abstraction (e.g. TOK) is mapped to 2 new "
+        "tokens - <si><si+1> ",
     )
 
     parser.add_argument(
@@ -451,33 +476,27 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--train_text_encoder_ti",
         action="store_true",
-        help=(
-            'Whether to use textual inversion'
-        ),
+        help=("Whether to use textual inversion"),
     )
 
     parser.add_argument(
         "--train_text_encoder_ti_frac",
         type=float,
         default=0.5,
-        help=(
-            'The percentage of epochs to perform textual inversion'
-        ),
+        help=("The percentage of epochs to perform textual inversion"),
     )
 
     parser.add_argument(
         "--train_text_encoder_frac",
         type=float,
         default=0.5,
-        help=(
-            'The percentage of epochs to perform text encoder tuning'
-        ),
+        help=("The percentage of epochs to perform text encoder tuning"),
     )
 
     parser.add_argument(
         "--optimizer",
         type=str,
-        default="AdamW",
+        default="adamW",
         help=('The optimizer type to use. Choose between ["AdamW", "prodigy"]'),
     )
 
@@ -605,9 +624,11 @@ def parse_args(input_args=None):
         raise ValueError("Specify only one of `--dataset_name` or `--instance_data_dir`")
 
     if args.train_text_encoder and args.train_text_encoder_ti:
-        raise ValueError("Specify only one of `--train_text_encoder` or `--train_text_encoder_ti. "
-                         "For full LoRA text encoder training check --train_text_encoder, for textual "
-                         "inversion training check `--train_text_encoder_ti`")
+        raise ValueError(
+            "Specify only one of `--train_text_encoder` or `--train_text_encoder_ti. "
+            "For full LoRA text encoder training check --train_text_encoder, for textual "
+            "inversion training check `--train_text_encoder_ti`"
+        )
 
     if args.train_text_encoder_ti:
         if isinstance(args.token_abstraction, str):
@@ -615,8 +636,10 @@ def parse_args(input_args=None):
         elif isinstance(args.token_abstraction, List):
             args.token_abstraction = args.token_abstraction
         else:
-            raise ValueError(f"Unsupported type for --args.token_abstraction: {type(args.token_abstraction)}. "
-                             f"Supported types are: str (for a single instance identifier) or List[str] (for multiple concepts)")
+            raise ValueError(
+                f"Unsupported type for --args.token_abstraction: {type(args.token_abstraction)}. "
+                f"Supported types are: str (for a single instance identifier) or List[str] (for multiple concepts)"
+            )
 
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
@@ -636,6 +659,7 @@ def parse_args(input_args=None):
 
     return args
 
+
 # Taken from https://github.com/replicate/cog-sdxl/blob/main/dataset_and_utils.py
 class TokenEmbeddingsHandler:
     def __init__(self, text_encoders, tokenizers):
@@ -649,9 +673,7 @@ class TokenEmbeddingsHandler:
     def initialize_new_tokens(self, inserting_toks: List[str]):
         idx = 0
         for tokenizer, text_encoder in zip(self.tokenizers, self.text_encoders):
-            assert isinstance(
-                inserting_toks, list
-            ), "inserting_toks should be a list of strings."
+            assert isinstance(inserting_toks, list), "inserting_toks should be a list of strings."
             assert all(
                 isinstance(tok, str) for tok in inserting_toks
             ), "All elements in inserting_toks should be strings."
@@ -664,21 +686,15 @@ class TokenEmbeddingsHandler:
             self.train_ids = tokenizer.convert_tokens_to_ids(self.inserting_toks)
 
             # random initialization of new tokens
-            std_token_embedding = (
-                text_encoder.text_model.embeddings.token_embedding.weight.data.std()
-            )
+            std_token_embedding = text_encoder.text_model.embeddings.token_embedding.weight.data.std()
 
             print(f"{idx} text encodedr's std_token_embedding: {std_token_embedding}")
 
-            text_encoder.text_model.embeddings.token_embedding.weight.data[
-                self.train_ids
-            ] = (
-                    torch.randn(
-                        len(self.train_ids), text_encoder.text_model.config.hidden_size
-                    )
-                    .to(device=self.device)
-                    .to(dtype=self.dtype)
-                    * std_token_embedding
+            text_encoder.text_model.embeddings.token_embedding.weight.data[self.train_ids] = (
+                torch.randn(len(self.train_ids), text_encoder.text_model.config.hidden_size)
+                .to(device=self.device)
+                .to(dtype=self.dtype)
+                * std_token_embedding
             )
             self.embeddings_settings[
                 f"original_embeddings_{idx}"
@@ -695,19 +711,13 @@ class TokenEmbeddingsHandler:
             idx += 1
 
     def save_embeddings(self, file_path: str):
-        assert (
-                self.train_ids is not None
-        ), "Initialize new tokens before saving embeddings."
+        assert self.train_ids is not None, "Initialize new tokens before saving embeddings."
         tensors = {}
         for idx, text_encoder in enumerate(self.text_encoders):
-            assert text_encoder.text_model.embeddings.token_embedding.weight.data.shape[
-                       0
-                   ] == len(self.tokenizers[0]), "Tokenizers should be the same."
-            new_token_embeddings = (
-                text_encoder.text_model.embeddings.token_embedding.weight.data[
-                    self.train_ids
-                ]
-            )
+            assert text_encoder.text_model.embeddings.token_embedding.weight.data.shape[0] == len(
+                self.tokenizers[0]
+            ), "Tokenizers should be the same."
+            new_token_embeddings = text_encoder.text_model.embeddings.token_embedding.weight.data[self.train_ids]
             tensors[f"text_encoders_{idx}"] = new_token_embeddings
 
         save_file(tensors, file_path)
@@ -720,29 +730,14 @@ class TokenEmbeddingsHandler:
     def device(self):
         return self.text_encoders[0].device
 
-    def _load_embeddings(self, loaded_embeddings, tokenizer, text_encoder):
-        # Assuming new tokens are of the format <s_i>
-        self.inserting_toks = [f"<s{i}>" for i in range(loaded_embeddings.shape[0])]
-        special_tokens_dict = {"additional_special_tokens": self.inserting_toks}
-        tokenizer.add_special_tokens(special_tokens_dict)
-        text_encoder.resize_token_embeddings(len(tokenizer))
-
-        self.train_ids = tokenizer.convert_tokens_to_ids(self.inserting_toks)
-        assert self.train_ids is not None, "New tokens could not be converted to IDs."
-        text_encoder.text_model.embeddings.token_embedding.weight.data[
-            self.train_ids
-        ] = loaded_embeddings.to(device=self.device).to(dtype=self.dtype)
-
     @torch.no_grad()
     def retract_embeddings(self):
         for idx, text_encoder in enumerate(self.text_encoders):
             index_no_updates = self.embeddings_settings[f"index_no_updates_{idx}"]
-            text_encoder.text_model.embeddings.token_embedding.weight.data[
-                index_no_updates
-            ] = (
+            text_encoder.text_model.embeddings.token_embedding.weight.data[index_no_updates] = (
                 self.embeddings_settings[f"original_embeddings_{idx}"][index_no_updates]
-                    .to(device=text_encoder.device)
-                    .to(dtype=text_encoder.dtype)
+                .to(device=text_encoder.device)
+                .to(dtype=text_encoder.dtype)
             )
 
             # for the parts that were updated, we need to normalize them
@@ -750,26 +745,11 @@ class TokenEmbeddingsHandler:
             std_token_embedding = self.embeddings_settings[f"std_token_embedding_{idx}"]
 
             index_updates = ~index_no_updates
-            new_embeddings = (
-                text_encoder.text_model.embeddings.token_embedding.weight.data[
-                    index_updates
-                ]
-            )
+            new_embeddings = text_encoder.text_model.embeddings.token_embedding.weight.data[index_updates]
             off_ratio = std_token_embedding / new_embeddings.std()
 
-            new_embeddings = new_embeddings * (off_ratio ** 0.1)
-            text_encoder.text_model.embeddings.token_embedding.weight.data[
-                index_updates
-            ] = new_embeddings
-
-    def load_embeddings(self, file_path: str):
-        with safe_open(file_path, framework="pt", device=self.device.type) as f:
-            for idx in range(len(self.text_encoders)):
-                text_encoder = self.text_encoders[idx]
-                tokenizer = self.tokenizers[idx]
-
-                loaded_embeddings = f.get_tensor(f"text_encoders_{idx}")
-                self._load_embeddings(loaded_embeddings, tokenizer, text_encoder)
+            new_embeddings = new_embeddings * (off_ratio**0.1)
+            text_encoder.text_model.embeddings.token_embedding.weight.data[index_updates] = new_embeddings
 
 
 class DreamBoothDataset(Dataset):
@@ -779,16 +759,16 @@ class DreamBoothDataset(Dataset):
     """
 
     def __init__(
-            self,
-            instance_data_root,
-            instance_prompt,
-            class_prompt,
-            class_data_root=None,
-            class_num=None,
-            token_abstraction_dict=None,  # token mapping for textual inversion
-            size=1024,
-            repeats=1,
-            center_crop=False,
+        self,
+        instance_data_root,
+        instance_prompt,
+        class_prompt,
+        class_data_root=None,
+        class_num=None,
+        token_abstraction_dict=None,  # token mapping for textual inversion
+        size=1024,
+        repeats=1,
+        center_crop=False,
     ):
         self.size = size
         self.center_crop = center_crop
@@ -1129,9 +1109,10 @@ def main(args):
         token_abstraction_dict = {}
         token_idx = 0
         for i, token in enumerate(args.token_abstraction):
-            token_abstraction_dict[token] = [f"<s{token_idx + i + j}>" for j in range(
-                args.num_new_tokens_per_abstraction)]
-            token_idx += (args.num_new_tokens_per_abstraction - 1)
+            token_abstraction_dict[token] = [
+                f"<s{token_idx + i + j}>" for j in range(args.num_new_tokens_per_abstraction)
+            ]
+            token_idx += args.num_new_tokens_per_abstraction - 1
 
         # replace instances of --token_abstraction in --instance_prompt with the new tokens: "<si><si+1>" etc.
         for token_abs, token_replacement in token_abstraction_dict.items():
@@ -1247,6 +1228,8 @@ def main(args):
         text_lora_parameters_one = []
         for name, param in text_encoder_one.named_parameters():
             if "token_embedding" in name:
+                # ensure that dtype is float32, even if rest of the model that isn't trained is loaded in fp16
+                param = param.to(dtype=torch.float32)
                 param.requires_grad = True
                 text_lora_parameters_one.append(param)
             else:
@@ -1254,6 +1237,8 @@ def main(args):
         text_lora_parameters_two = []
         for name, param in text_encoder_two.named_parameters():
             if "token_embedding" in name:
+                # ensure that dtype is float32, even if rest of the model that isn't trained is loaded in fp16
+                param = param.to(dtype=torch.float32)
                 param.requires_grad = True
                 text_lora_parameters_two.append(param)
             else:
