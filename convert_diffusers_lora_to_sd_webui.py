@@ -1,5 +1,6 @@
 from pathlib import Path
 from diffusers import StableDiffusionXLPipeline
+from diffusers.utils import state_dict_utils
 import torch
 from safetensors.torch import save_file
 
@@ -43,35 +44,9 @@ LORA_CLIP_MAP = {
     "lora_linear_layer.up": "lora_up",
 }
 
-# PEFT -> webui
-LORA_CLIP_MAP_PEFT = {
-    "mlp.fc1": "mlp_fc1",
-    "mlp.fc2": "mlp_fc2",
-    "self_attn.k_proj": "self_attn_k_proj",
-    "self_attn.q_proj": "self_attn_q_proj",
-    "self_attn.v_proj": "self_attn_v_proj",
-    "self_attn.out_proj": "self_attn_out_proj",
-    "lora_A": "lora_down",
-    "lora_B": "lora_up",
-}
-
-# (original) OLD_DIFFUSERS -> webui
-LORA_UNET_MAP_OLD_DIFFUSERS = {
-    "to_q_lora.down": "to_q.lora_down",
-    "to_q_lora.up": "to_q.lora_up",
-    "to_k_lora.down": "to_k.lora_down",
-    "to_k_lora.up": "to_k.lora_up",
-    "to_v_lora.down": "to_v.lora_down",
-    "to_v_lora.up": "to_v.lora_up",
-    "to_out_lora.down": "to_out_0.lora_down",
-    "to_out_lora.up": "to_out_0.lora_up",
-    "to_q.alpha": "to_q.alpha",
-    "to_k.alpha": "to_k.alpha",
-    "to_v.alpha": "to_v.alpha",
-}
 
 # (new) DIFFUSERS -> webui
-LORA_UNET_MAP_DIFFUSERS = {
+LORA_UNET_MAP = {
     "q_proj.lora_linear_layer.down": "to_q.lora_down",
     "q_proj.lora_linear_layer.up": "to_q.lora_up",
     "k_proj.lora_linear_layer.down": "to_k.lora_down",
@@ -84,99 +59,18 @@ LORA_UNET_MAP_DIFFUSERS = {
     "to_k.alpha": "to_k.alpha",
     "to_v.alpha": "to_v.alpha",
 
-
 }
 
-# (new) PEFT -> webui
-LORA_UNET_MAP_PEFT = {
-    "q_proj.lora_A": "to_q.lora_down",
-    "q_proj.lora_B": "to_q.lora_up",
-    "k_proj.lora_A": "to_k.lora_down",
-    "k_proj.lora_B": "to_k.lora_up",
-    "v_proj.lora_A": "to_v.lora_down",
-    "v_proj.lora_B": "to_v.lora_up",
-    "out_proj.lora_A": "to_out_0.lora_down",
-    "out_proj.lora_B": "to_out_0.lora_up",
-    "to_q.alpha": "to_q.alpha",
-    "to_k.alpha": "to_k.alpha",
-    "to_v.alpha": "to_v.alpha",
-    "lora_A": "lora_down",
-    "lora_B": "lora_up",
-}
 
-# copied from https://github.com/huggingface/diffusers/blob/main/src/diffusers/utils/state_dict_utils.py
-DIFFUSERS_OLD_TO_DIFFUSERS = {
-    ".to_q_lora.up": ".q_proj.lora_linear_layer.up",
-    ".to_q_lora.down": ".q_proj.lora_linear_layer.down",
-    ".to_k_lora.up": ".k_proj.lora_linear_layer.up",
-    ".to_k_lora.down": ".k_proj.lora_linear_layer.down",
-    ".to_v_lora.up": ".v_proj.lora_linear_layer.up",
-    ".to_v_lora.down": ".v_proj.lora_linear_layer.down",
-    ".to_out_lora.up": ".out_proj.lora_linear_layer.up",
-    ".to_out_lora.down": ".out_proj.lora_linear_layer.down",
-}
-
-DIFFUSERS_TO_PEFT = {
-    ".q_proj.lora_linear_layer.up": ".q_proj.lora_B",
-    ".q_proj.lora_linear_layer.down": ".q_proj.lora_A",
-    ".k_proj.lora_linear_layer.up": ".k_proj.lora_B",
-    ".k_proj.lora_linear_layer.down": ".k_proj.lora_A",
-    ".v_proj.lora_linear_layer.up": ".v_proj.lora_B",
-    ".v_proj.lora_linear_layer.down": ".v_proj.lora_A",
-    ".out_proj.lora_linear_layer.up": ".out_proj.lora_B",
-    ".out_proj.lora_linear_layer.down": ".out_proj.lora_A",
-    ".lora_linear_layer.up": ".lora_B",
-    ".lora_linear_layer.down": ".lora_A",
-}
-
-DIFFUSERS_OLD_TO_PEFT = {
-    ".to_q_lora.up": ".q_proj.lora_B",
-    ".to_q_lora.down": ".q_proj.lora_A",
-    ".to_k_lora.up": ".k_proj.lora_B",
-    ".to_k_lora.down": ".k_proj.lora_A",
-    ".to_v_lora.up": ".v_proj.lora_B",
-    ".to_v_lora.down": ".v_proj.lora_A",
-    ".to_out_lora.up": ".out_proj.lora_B",
-    ".to_out_lora.down": ".out_proj.lora_A",
-    ".lora_linear_layer.up": ".lora_B",
-    ".lora_linear_layer.down": ".lora_A",
-}
-
-PEFT_TO_DIFFUSERS = {
-    ".q_proj.lora_B": ".q_proj.lora_linear_layer.up",
-    ".q_proj.lora_A": ".q_proj.lora_linear_layer.down",
-    ".k_proj.lora_B": ".k_proj.lora_linear_layer.up",
-    ".k_proj.lora_A": ".k_proj.lora_linear_layer.down",
-    ".v_proj.lora_B": ".v_proj.lora_linear_layer.up",
-    ".v_proj.lora_A": ".v_proj.lora_linear_layer.down",
-    ".out_proj.lora_B": ".out_proj.lora_linear_layer.up",
-    ".out_proj.lora_A": ".out_proj.lora_linear_layer.down",
-    "to_k.lora_A": "to_k.lora.down",
-    "to_k.lora_B": "to_k.lora.up",
-    "to_q.lora_A": "to_q.lora.down",
-    "to_q.lora_B": "to_q.lora.up",
-    "to_v.lora_A": "to_v.lora.down",
-    "to_v.lora_B": "to_v.lora.up",
-    "to_out.0.lora_A": "to_out.0.lora.down",
-    "to_out.0.lora_B": "to_out.0.lora.up",
-}
-
-KEYS_TO_ALWAYS_REPLACE = {
-    ".processor.": ".",
-}
 #############################################################
 
+# intermediate dict to convert from the current format of the lora to DIFFUSERS
+# we will then convert from DIFFUSERS to webui
+state_dict = state_dict_utils.convert_state_dict_to_diffusers(state_dict)
 
 webui_lora_state_dict = {}
 
 for k, v in state_dict.items():
-
-    # First, filter out the keys that we always want to replace
-    for pattern in KEYS_TO_ALWAYS_REPLACE.keys():
-        if pattern in k:
-            new_pattern = KEYS_TO_ALWAYS_REPLACE[pattern]
-            k = k.replace(pattern, new_pattern)
-
     is_text_encoder = False
     prefix = k.split(".")[0]
     if prefix == "text_encoder":
@@ -189,26 +83,11 @@ for k, v in state_dict.items():
         k = k.replace("unet", "lora_unet")
 
     if is_text_encoder:
-        # PEFT -> webui
-        if any("lora_A" in k for k in state_dict.keys()):
-            for map_k, map_v in LORA_CLIP_MAP_PEFT.items():
-                k = k.replace(map_k, map_v)
-        else:
-            for map_k, map_v in LORA_CLIP_MAP.items():
-                k = k.replace(map_k, map_v)
+        for map_k, map_v in LORA_CLIP_MAP.items():
+            k = k.replace(map_k, map_v)
     else:
-        # OLD_DIFFUSERS -> webui
-        if any("to_out_lora" in k for k in state_dict.keys()):
-            for map_k, map_v in LORA_UNET_MAP_OLD_DIFFUSERS.items():
-                k = k.replace(map_k, map_v)
-        # PEFT -> webui
-        elif any(".lora_A.weight" in k for k in state_dict.keys()):
-            for map_k, map_v in LORA_UNET_MAP_PEFT.items():
-                k = k.replace(map_k, map_v)
-        # DIFFUSERS -> webui
-        elif any("lora_linear_layer" in k for k in state_dict.keys()):
-            for map_k, map_v in LORA_UNET_MAP_DIFFUSERS.items():
-                k = k.replace(map_k, map_v)
+        for map_k, map_v in LORA_UNET_MAP.items():
+            k = k.replace(map_k, map_v)
 
     keep_dots = 0
     if k.endswith(".alpha"):
