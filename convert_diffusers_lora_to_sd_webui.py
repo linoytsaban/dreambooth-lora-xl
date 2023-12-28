@@ -52,7 +52,7 @@ LORA_CLIP_MAP_PEFT = {
     "self_attn.v_proj": "self_attn_v_proj",
     "self_attn.out_proj": "self_attn_out_proj",
     "lora_A": "lora_down",
-    "lora_A": "lora_up",
+    "lora_B": "lora_up",
 }
 
 # (original) OLD_DIFFUSERS -> webui
@@ -186,8 +186,13 @@ for k, v in state_dict.items():
         k = k.replace("unet", "lora_unet")
 
     if is_text_encoder:
-        for map_k, map_v in LORA_CLIP_MAP.items():
-            k = k.replace(map_k, map_v)
+        # PEFT -> webui
+        if any("lora_A" in k for k in state_dict.keys()):
+            for map_k, map_v in LORA_CLIP_MAP_PEFT.items():
+                k = k.replace(map_k, map_v)
+        else:
+            for map_k, map_v in LORA_CLIP_MAP.items():
+                k = k.replace(map_k, map_v)
     else:
         # OLD_DIFFUSERS -> webui
         if any("to_out_lora" in k for k in state_dict.keys()):
