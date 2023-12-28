@@ -57,48 +57,48 @@ LORA_CLIP_MAP_PEFT = {
 
 # (original) OLD_DIFFUSERS -> webui
 LORA_UNET_MAP_OLD_DIFFUSERS = {
-    ".to_q_lora.down": "to_q.lora_down",
-    ".to_q_lora.up": "to_q.lora_up",
-    ".to_k_lora.down": "to_k.lora_down",
-    ".to_k_lora.up": "to_k.lora_up",
-    ".to_v_lora.down": "to_v.lora_down",
-    ".to_v_lora.up": "to_v.lora_up",
-    ".to_out_lora.down": "to_out_0.lora_down",
-    ".to_out_lora.up": "to_out_0.lora_up",
-    ".to_q.alpha": "to_q.alpha",
-    ".to_k.alpha": "to_k.alpha",
-    ".to_v.alpha": "to_v.alpha",
+    "to_q_lora.down": "to_q.lora_down",
+    "to_q_lora.up": "to_q.lora_up",
+    "to_k_lora.down": "to_k.lora_down",
+    "to_k_lora.up": "to_k.lora_up",
+    "to_v_lora.down": "to_v.lora_down",
+    "to_v_lora.up": "to_v.lora_up",
+    "to_out_lora.down": "to_out_0.lora_down",
+    "to_out_lora.up": "to_out_0.lora_up",
+    "to_q.alpha": "to_q.alpha",
+    "to_k.alpha": "to_k.alpha",
+    "to_v.alpha": "to_v.alpha",
 }
 
 # (new) DIFFUSERS -> webui
 LORA_UNET_MAP_DIFFUSERS = {
-    ".q_proj.lora_linear_layer.down": "to_q.lora_down",
-    ".q_proj.lora_linear_layer.up": "to_q.lora_up",
-    ".k_proj.lora_linear_layer.down": "to_k.lora_down",
-    ".k_proj.lora_linear_layer.up": "to_k.lora_up",
-    ".v_proj.lora_linear_layer.down": "to_v.lora_down",
-    ".v_proj.lora_linear_layer.up": "to_v.lora_up",
-    ".out_proj.lora_linear_layer.down": "to_out_0.lora_down",
-    ".out_proj.lora_linear_layer.up": "to_out_0.lora_up",
-    ".to_q.alpha": "to_q.alpha",
-    ".to_k.alpha": "to_k.alpha",
-    ".to_v.alpha": "to_v.alpha",
+    "q_proj.lora_linear_layer.down": "to_q.lora_down",
+    "q_proj.lora_linear_layer.up": "to_q.lora_up",
+    "k_proj.lora_linear_layer.down": "to_k.lora_down",
+    "k_proj.lora_linear_layer.up": "to_k.lora_up",
+    "v_proj.lora_linear_layer.down": "to_v.lora_down",
+    "v_proj.lora_linear_layer.up": "to_v.lora_up",
+    "out_proj.lora_linear_layer.down": "to_out_0.lora_down",
+    "out_proj.lora_linear_layer.up": "to_out_0.lora_up",
+    "to_q.alpha": "to_q.alpha",
+    "to_k.alpha": "to_k.alpha",
+    "to_v.alpha": "to_v.alpha",
 
 }
 
 # (new) PEFT -> webui
 LORA_UNET_MAP_PEFT = {
-    ".q_proj.lora_A": "to_q.lora_down",
-    ".q_proj.lora_B": "to_q.lora_up",
-    ".k_proj.lora_A": "to_k.lora_down",
-    ".k_proj.lora_B": "to_k.lora_up",
-    ".v_proj.lora_A": "to_v.lora_down",
-    ".v_proj.lora_B": "to_v.lora_up",
-    ".out_proj.lora_A": "to_out_0.lora_down",
-    ".out_proj.lora_B": "to_out_0.lora_up",
-    ".to_q.alpha": "to_q.alpha",
-    ".to_k.alpha": "to_k.alpha",
-    ".to_v.alpha": "to_v.alpha",
+    "q_proj.lora_A": "to_q.lora_down",
+    "q_proj.lora_B": "to_q.lora_up",
+    "k_proj.lora_A": "to_k.lora_down",
+    "k_proj.lora_B": "to_k.lora_up",
+    "v_proj.lora_A": "to_v.lora_down",
+    "v_proj.lora_B": "to_v.lora_up",
+    "out_proj.lora_A": "to_out_0.lora_down",
+    "out_proj.lora_B": "to_out_0.lora_up",
+    "to_q.alpha": "to_q.alpha",
+    "to_k.alpha": "to_k.alpha",
+    "to_v.alpha": "to_v.alpha",
 }
 
 # copied from https://github.com/huggingface/diffusers/blob/main/src/diffusers/utils/state_dict_utils.py
