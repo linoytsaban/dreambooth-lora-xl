@@ -1,5 +1,5 @@
 from pathlib import Path
-from diffusers import StableDiffusionXLPipeline
+from diffusers import StableDiffusionXLPipeline, DiffusionPipeline
 from diffusers.utils import state_dict_utils
 import torch
 from safetensors.torch import save_file
@@ -25,11 +25,21 @@ from safetensors.torch import save_file
 # 4. lora_unet_down_blocks_1_attentions_0_transformer_blocks_0_attn1_to_k.lora_down.weight
 
 
-pipe = StableDiffusionXLPipeline.from_pretrained(
-    "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float32, local_files_only=True
-)
-state_dict, _ = pipe.lora_state_dict(
-    Path("<your_lora.safetensors>"), local_files_only=True
+# pipe = StableDiffusionXLPipeline.from_pretrained(
+#     "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float32, local_files_only=True
+# )
+# state_dict, _ = pipe.lora_state_dict(
+#     Path("<your_lora.safetensors>"), local_files_only=True
+# )
+
+pipe = DiffusionPipeline.from_pretrained(
+        "stabilityai/stable-diffusion-xl-base-1.0",
+        torch_dtype=torch.float16,
+        variant="fp16",
+).to("cuda")
+
+state_dict,_  = pipe.lora_state_dict("multimodalart/medieval-animals",
+                                    weight_name="pytorch_lora_weights.safetensors"
 )
 
 # DIFFUSERS -> webui and OLD_DIFFUSERS -> webui
@@ -66,11 +76,14 @@ LORA_UNET_MAP = {
 
 # intermediate dict to convert from the current format of the lora to DIFFUSERS
 # we will then convert from DIFFUSERS to webui
-state_dict = state_dict_utils.convert_state_dict_to_diffusers(state_dict)
+diffusers_state_dict = state_dict_utils.convert_state_dict_to_diffusers(state_dict)
+with open('test_conversion_script_peft.txt', 'w') as f:
+    for line in list(diffusers_state_dict.keys()):
+        f.write(f"{line}\n")
 
 webui_lora_state_dict = {}
 
-for k, v in state_dict.items():
+for k, v in diffusers_state_dict.items():
     is_text_encoder = False
     prefix = k.split(".")[0]
     if prefix == "text_encoder":
@@ -99,4 +112,7 @@ for k, v in state_dict.items():
 
     webui_lora_state_dict[k] = v
 
+with open('test_conversion_script_webui_not_peft.txt', 'w') as f:
+    for line in list(webui_lora_state_dict.keys()):
+        f.write(f"{line}\n")
 save_file(webui_lora_state_dict, "<your_lora_for_webui.safetensors>")
