@@ -84,6 +84,7 @@ LORA_UNET_MAP_DIFFUSERS = {
     "to_k.alpha": "to_k.alpha",
     "to_v.alpha": "to_v.alpha",
 
+
 }
 
 # (new) PEFT -> webui
@@ -99,6 +100,8 @@ LORA_UNET_MAP_PEFT = {
     "to_q.alpha": "to_q.alpha",
     "to_k.alpha": "to_k.alpha",
     "to_v.alpha": "to_v.alpha",
+    "lora_A": "lora_down",
+    "lora_B": "lora_up",
 }
 
 # copied from https://github.com/huggingface/diffusers/blob/main/src/diffusers/utils/state_dict_utils.py
