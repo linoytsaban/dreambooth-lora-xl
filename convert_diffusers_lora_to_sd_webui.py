@@ -20,18 +20,14 @@ LORA_CLIP_MAP = {
 
 # (new) DIFFUSERS -> webui
 LORA_UNET_MAP = {
-    "q_proj.lora_linear_layer.down": "to_q.lora_down",
-    "q_proj.lora_linear_layer.up": "to_q.lora_up",
-    "k_proj.lora_linear_layer.down": "to_k.lora_down",
-    "k_proj.lora_linear_layer.up": "to_k.lora_up",
-    "v_proj.lora_linear_layer.down": "to_v.lora_down",
-    "v_proj.lora_linear_layer.up": "to_v.lora_up",
-    "out_proj.lora_linear_layer.down": "to_out_0.lora_down",
-    "out_proj.lora_linear_layer.up": "to_out_0.lora_up",
-    "to_q.alpha": "to_q.alpha",
-    "to_k.alpha": "to_k.alpha",
-    "to_v.alpha": "to_v.alpha",
-
+    "to_q.lora.down": "to_q.lora_down",
+    "to_q.lora.up": "to_q.lora_up",
+    "to.k.lora.down": "to_k.lora_down",
+    "to_k.lora.up": "to_k.lora_up",
+    "to_v.lora.down": "to_v.lora_down",
+    "to_v.lora.up": "to_v.lora_up",
+    "to_out.0.lora.down": "to_out_0.lora_down",
+    "to_out.0.lora.up": "to_out_0.lora_up",
 }
 
 # intermediate dict to convert from the current format of the lora to DIFFUSERS
