@@ -34,6 +34,20 @@ LORA_UNET_MAP = {
 
 }
 
+# LORA_UNET_MAP = {
+#     ".to_q_lora.down": "to_q.lora_down",
+#     ".to_q_lora.up": "to_q.lora_up",
+#     ".to_k_lora.down": "to_k.lora_down",
+#     ".to_k_lora.up": "to_k.lora_up",
+#     ".to_v_lora.down": "to_v.lora_down",
+#     ".to_v_lora.up": "to_v.lora_up",
+#     ".to_out_lora.down": "to_out_0.lora_down",
+#     ".to_out_lora.up": "to_out_0.lora_up",
+#     ".to_q.alpha": "to_q.alpha",
+#     ".to_k.alpha": "to_k.alpha",
+#     ".to_v.alpha": "to_v.alpha",
+# }
+
 # intermediate dict to convert from the current format of the lora to DIFFUSERS
 # we will then convert from DIFFUSERS to webui
 diffusers_state_dict = state_dict_utils.convert_state_dict_to_diffusers(state_dict)
