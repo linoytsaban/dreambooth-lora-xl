@@ -1,46 +1,9 @@
 from pathlib import Path
-from diffusers import StableDiffusionXLPipeline, DiffusionPipeline
 from diffusers.utils import state_dict_utils
 import torch
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 
-# text_encoder.text_model.encoder.layers.0.self_attn.k_proj.lora_linear_layer.down.weight
-# lora_te_text_model_encoder_layers_0_self_attn_k_proj.lora_down.weight
-# 1. text_encoder -> lora_te, text_encoder_2 -> lora_te2
-# 2. map
-# 3. .weight -> 2 .alpha -> 1 and replace . -> _
-# test:
-# 1. lora_te.text_model.encoder.layers.0.self_attn.k_proj.lora_linear_layer.down.weight
-# 2. lora_te.text_model.encoder.layers.0.self_attn.k_proj.lora_down.weight
-# 2. lora_te_text_model_encoder_layers_0_self_attn_k_proj.lora_down.weight
-
-# unet.down_blocks.1.attentions.0.transformer_blocks.0.attn1.processor.to_k_lora.down.weight
-# lora_unet_down_blocks_1_attentions_0_transformer_blocks_0_attn1_to_k.lora_down.weight
-# 1. unet -> lora_unet
-# 2. map
-# 4. .weight -> 2 .alpha -> 1 and replace . -> _
-# test:
-# 1. lora_unet.down_blocks.1.attentions.0.transformer_blocks.0.attn1.processor.to_k_lora.down.weight
-# 2. lora_unet.down_blocks_1_attentions_0_transformer_blocks_0_attn1.to_k.lora_down.weight
-# 4. lora_unet_down_blocks_1_attentions_0_transformer_blocks_0_attn1_to_k.lora_down.weight
-
-
-# pipe = StableDiffusionXLPipeline.from_pretrained(
-#     "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float32, local_files_only=True
-# )
-# state_dict, _ = pipe.lora_state_dict(
-#     Path("<your_lora.safetensors>"), local_files_only=True
-# )
-
-pipe = DiffusionPipeline.from_pretrained(
-        "stabilityai/stable-diffusion-xl-base-1.0",
-        torch_dtype=torch.float16,
-        variant="fp16",
-).to("cuda")
-
-state_dict,_  = pipe.lora_state_dict("multimodalart/medieval-animals",
-                                    weight_name="pytorch_lora_weights.safetensors"
-)
+state_dict = load_file("animals.safetensors")
 
 # DIFFUSERS -> webui and OLD_DIFFUSERS -> webui
 LORA_CLIP_MAP = {
@@ -70,9 +33,6 @@ LORA_UNET_MAP = {
     "to_v.alpha": "to_v.alpha",
 
 }
-
-
-#############################################################
 
 # intermediate dict to convert from the current format of the lora to DIFFUSERS
 # we will then convert from DIFFUSERS to webui
@@ -115,4 +75,4 @@ for k, v in diffusers_state_dict.items():
 with open('test_conversion_script_webui_not_peft.txt', 'w') as f:
     for line in list(webui_lora_state_dict.keys()):
         f.write(f"{line}\n")
-save_file(webui_lora_state_dict, "<your_lora_for_webui.safetensors>")
+save_file(webui_lora_state_dict, "diffusers_animals.safetensors")
